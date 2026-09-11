@@ -27,9 +27,36 @@ The script prints one JSON object. Read `route` and act:
 |---|---|---|
 | `latex` | arXiv source obtained (tier 1) | Read `source_path`. This is the good case. |
 | `needs-html` | No LaTeX; an HTML full text may exist | Fetch `html_url` (or `page_url`) with Firecrawl `firecrawl_scrape`. |
-| `needs-pdf` | Only a PDF exists | Convert with MarkItDown MCP `convert_to_markdown`. |
+| `needs-pdf` | Only a PDF exists | Convert to text — see "The PDF route" below. |
 | `unresolved` | Nothing identified the reference | Stop. Tell the user what was tried and ask for an arXiv ID, a DOI, or a direct URL. Do not guess at which paper was meant. |
 | `needs-output-config` | No output location has ever been chosen | Ask (see below), save the answer, re-run Step 0. |
+
+### The PDF route: getting readable text out
+
+Detect what this machine has and use the first that works. Do not ask the user to
+install anything until every option has been tried.
+
+1. **MarkItDown MCP** — `convert_to_markdown`. Best structure (headings, tables,
+   lists survive). Available only when the session has that MCP server.
+2. **`markitdown` CLI** — same engine, no MCP needed:
+   ```bash
+   command -v markitdown && markitdown "<file.pdf>"
+   ```
+3. **`pdftotext -layout`** — Poppler, present on most Linux installs. `-layout`
+   preserves column geometry, which decides whether a two-column paper comes out
+   readable or interleaved:
+   ```bash
+   command -v pdftotext && pdftotext -layout "<file.pdf>" -
+   ```
+4. **Nothing available** — stop and say so, with the install line:
+   `pip install 'markitdown[pdf]'`, or the distribution's `poppler-utils`.
+
+**None of these recover formulas, and saying otherwise would be misleading.** A
+PDF stores glyph positions, not structure; whether a `2` was a superscript, a
+subscript or a literal digit is information that stopped existing before any tool
+opened the file. MarkItDown makes tier 6 more *readable*, never more *correct*.
+The Discipline rules below apply in full on this route — mark damaged formulas,
+never infer them. The real fix is always to climb back to tier 1.
 
 ### First run: ask where lectures go
 

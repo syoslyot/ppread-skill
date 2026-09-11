@@ -68,6 +68,20 @@ cd ppread-skill && ./deploy.sh      # → ~/.claude/skills/ppread/
 只需要 `python3`（>=3.10）。`fetch.py` 純標準函式庫，沒有任何第三方依賴，
 也不需要 pandoc——LaTeX 直接交給 agent 讀，不做格式轉換。
 
+**PDF 路線的選用依賴。** 只有在論文既沒有 arXiv 原始碼也沒有 HTML 全文時才會用到，
+依序偵測、有哪個用哪個，都沒有才會提示安裝：
+
+| 優先 | 工具 | 取得方式 |
+|---|---|---|
+| 1 | MarkItDown MCP | Claude Code 的 MCP server |
+| 2 | `markitdown` CLI | `pip install 'markitdown[pdf]'` |
+| 3 | `pdftotext -layout` | 多數 Linux 內建（`poppler-utils`） |
+
+要注意的是這些工具改善的是**結構**（標題、表格、雙欄順序），不是**公式**。PDF 裡
+只有字形座標，沒有上標／分數／求和上下限這類結構資訊，那在檔案產生時就已經消失，
+任何工具都還原不回來。裝了 MarkItDown 會讓 tier 6 更好讀，不會更正確——真正的解法
+永遠是爬回 tier 1 拿 LaTeX 原始碼。
+
 選用：`export PPREAD_CONTACT=you@example.com` 可進入 Crossref 的 polite pool
 （較快的查詢佇列）。不設也完全能用。
 
