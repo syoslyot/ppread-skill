@@ -1,6 +1,6 @@
 ---
 name: ppread
-description: "Paragraph-by-paragraph bilingual close reading of a research paper — invoke with /ppread <arXiv ID | DOI | URL | PDF path>. Fetches the highest-fidelity full text available (arXiv LaTeX source first, falling back through HTML to PDF), then writes a Traditional Chinese lecture to reading/<title>.md: for each passage, the English original, a translation, and an explanation covering background, prior work, experimental rationale and formula breakdown. Stops at the lecture and never writes the user's own notes."
+description: "Paragraph-by-paragraph bilingual close reading of a research paper — invoke with /ppread <arXiv ID | DOI | URL | PDF path>. Fetches the highest-fidelity full text available (arXiv LaTeX source first, falling back through HTML to PDF), then writes a Traditional Chinese lecture to papers/<slug>/lecture.md, beside the source it fetched: for each passage, the English original, a translation, and an explanation covering background, prior work, experimental rationale and formula breakdown. Stops at the lecture and never writes the user's own notes."
 ---
 
 # /ppread — Paper Close Reading
@@ -15,7 +15,7 @@ or URL, a DOI, a publisher URL, a paper title, or a local PDF path.
 ## Step 0: Fetch
 
 ```bash
-python3 ~/.claude/skills/ppread/fetch.py "<source>" --out .ppread
+python3 ~/.claude/skills/ppread/fetch.py "<source>" --out papers
 ```
 
 For a local PDF path, skip the script entirely and go straight to the PDF route
@@ -30,7 +30,9 @@ The script prints one JSON object. Read `route` and act:
 | `needs-pdf` | Only a PDF exists | Convert with MarkItDown MCP `convert_to_markdown`. |
 | `unresolved` | Nothing identified the reference | Stop. Tell the user what was tried and ask for an arXiv ID, a DOI, or a direct URL. Do not guess at which paper was meant. |
 
-`meta.json` in the workdir holds title, authors, year, DOI, arXiv ID and abstract.
+The JSON also carries `meta` (title, authors, year, DOI, arXiv ID, venue,
+abstract) and `slug`. Nothing is written to disk except the source itself —
+carry the metadata straight into the lecture's front matter.
 
 **Report the tier to the user before starting**, in one line — tier 1 means
 formulas and citations are exact; tier 5–6 means they were reconstructed from a
@@ -61,10 +63,23 @@ Write **one section per pass**, appending to the file. Never try to emit the
 whole paper in a single response — long papers overflow and quality collapses
 near the end. After each section, state what was completed and continue.
 
-Output path: `reading/<paper title>.md`, relative to the current directory.
-Create `reading/` if absent. Use the paper's real title as the filename so
-Obsidian `[[wikilinks]]` resolve naturally; strip characters illegal in
-filenames (`/ \ : * ? " < > |`).
+Output path: **`papers/<slug>/lecture.md`** — the same folder `fetch.py` put the
+source in, so everything about one paper lives together:
+
+```
+papers/attention-is-all-you-need/
+    source.tex     # only on the latex route; absent otherwise
+    src/           # unpacked e-print tree — figures live here
+    lecture.md     # what you write
+```
+
+`<slug>` is the `slug` field from the fetch result. On a route with no LaTeX,
+`fetch.py` creates nothing — make the folder yourself and write only
+`lecture.md`.
+
+**There is no separate metadata file.** Title, authors, year, DOI, arXiv ID,
+venue and fidelity tier all go in the lecture's YAML front matter, where a reader
+sees them. Two files holding the same facts is two files to keep in sync.
 
 ## Step 3: Stop
 

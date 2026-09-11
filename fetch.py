@@ -359,7 +359,8 @@ def slugify(title: str, fallback: str) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Resolve a paper to its best available full text.")
     ap.add_argument("source", help="arXiv ID/URL, DOI, publisher URL, or a title to search")
-    ap.add_argument("--out", default=".ppread", help="working directory (default: .ppread)")
+    ap.add_argument("--out", default="papers",
+                    help="directory holding one folder per paper (default: papers)")
     ap.add_argument("--keep-comments", action="store_true",
                     help="keep whole-line LaTeX comments (stripped by default)")
     args = ap.parse_args()
@@ -412,12 +413,15 @@ def main() -> int:
                 meta[k] = v
 
     slug = slugify(meta["title"], meta["arxiv_id"] or "paper")
+    # One folder per paper: the source and the lecture the agent writes live
+    # side by side. The folder is created only if there is something to put in
+    # it — a failed lookup should not litter the tree with empty directories.
     workdir = Path(args.out) / slug
-    workdir.mkdir(parents=True, exist_ok=True)
 
     result = {"slug": slug, "workdir": str(workdir), "meta": meta}
 
     if meta["arxiv_id"]:
+        workdir.mkdir(parents=True, exist_ok=True)
         kind2, path = fetch_eprint(meta["arxiv_id"], workdir)
         if kind2 == "latex" and path is not None:
             text = assemble(path, strip_comments=not args.keep_comments)
@@ -461,8 +465,8 @@ def main() -> int:
                              "source (lookup services unreachable or no match); "
                              "ask the user for an arXiv ID, a DOI, or a direct URL"}
 
-    (workdir / "meta.json").write_text(
-        json.dumps(result, ensure_ascii=False, indent=2), "utf-8")
+    # No meta.json: the metadata belongs in the lecture's front matter, where a
+    # reader actually sees it. Writing it twice means two files to keep in sync.
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 

@@ -80,8 +80,17 @@ cd ppread-skill && ./deploy.sh      # → ~/.claude/skills/ppread/
 /ppread ./downloaded-paper.pdf
 ```
 
-產出在 `reading/<論文標題>.md`，中間檔在 `.ppread/`（dot 開頭，Obsidian 不會索引）。
-在 Obsidian vault 裡跑，講義可直接用 `[[wikilink]]` 連結。
+一篇論文一個資料夾，原始檔與講義放在一起：
+
+```
+papers/attention-is-all-you-need/
+    source.tex     # 只有走 LaTeX 路線才有
+    src/           # 解壓出的 e-print 樹，圖檔在這裡
+    lecture.md     # 講義
+```
+
+metadata（標題、作者、年份、DOI、arXiv ID、保真度 tier）全部寫在 `lecture.md`
+的 YAML front matter，不另開 metadata 檔。
 
 ## 它刻意不做的事
 
