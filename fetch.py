@@ -11,6 +11,7 @@ import argparse
 import gzip
 import io
 import json
+import os
 import re
 import sys
 import tarfile
@@ -22,7 +23,12 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-UA = "ppread/0.1 (paper reading assistant; mailto:syoslyot@gmail.com)"
+# Crossref's "polite pool" gives contactable clients a separate, faster resource
+# pool; the address is for accountability, never verified, and entirely optional.
+# arXiv only requires that the agent be identifiable at all.
+_CONTACT = os.environ.get("PPREAD_CONTACT", "").strip()
+UA = ("ppread/0.1 (+https://github.com/syoslyot/ppread-skill" +
+      (f"; mailto:{_CONTACT})" if _CONTACT else ")"))
 TIMEOUT = 45
 
 ARXIV_NEW = r"\d{4}\.\d{4,5}"
