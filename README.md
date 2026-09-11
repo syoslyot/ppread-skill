@@ -71,6 +71,28 @@ cd ppread-skill && ./deploy.sh      # → ~/.claude/skills/ppread/
 選用：`export PPREAD_CONTACT=you@example.com` 可進入 Crossref 的 polite pool
 （較快的查詢佇列）。不設也完全能用。
 
+## 第一次執行：決定講義放哪裡
+
+第一次跑 `/ppread` 時會先問一個問題，**在下載任何東西之前**：
+
+- **固定一個位置** — 不管從哪個目錄啟動，論文都進同一個資料庫
+- **當前目錄下的 `papers/`** — 每個專案各有各的資料庫
+
+答案記在 `~/.config/ppread/config.json`，之後不再問。
+
+```bash
+# 直接設定，跳過詢問
+fetch.py --set-output "fixed:/home/me/research/papers"
+fetch.py --set-output "cwd:papers"
+
+fetch.py --show-config     # 看目前設定與實際解析到的路徑
+fetch.py <source> --out X  # 單次覆寫，不改設定
+```
+
+刻意不給預設值：預設成 `./papers` 意味著在 session 恰好啟動的任何目錄裡憑空長出
+一個資料夾——可能是別人的 repo，可能是家目錄。這個問題只問一次，換來的是這個
+工具永遠不會寫到沒被同意的地方。
+
 ## 用法
 
 ```

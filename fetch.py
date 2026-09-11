@@ -69,6 +69,42 @@ def get(url: str, accept: str | None = None, retries: int = 3,
     raise RuntimeError("unreachable")
 
 
+# --- output location config ---
+#
+# Where lectures land is the one thing this tool cannot infer. Guessing means
+# writing into whatever directory the agent happened to start in — someone
+# else's repo, a home directory. So the location is asked once and remembered.
+
+CONFIG_PATH = (Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+               / "ppread" / "config.json")
+
+
+def load_config() -> dict:
+    try:
+        return json.loads(CONFIG_PATH.read_text("utf-8"))
+    except Exception:
+        return {}
+
+
+def save_config(cfg: dict) -> None:
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", "utf-8")
+
+
+def resolve_out(cli_out: str | None) -> tuple[Path | None, dict]:
+    """(destination, config). A None destination means nothing is configured yet
+    and the caller must ask before touching the network or the filesystem."""
+    cfg = load_config()
+    if cli_out:
+        return Path(cli_out).expanduser(), cfg
+    mode = cfg.get("mode")
+    if mode == "fixed" and cfg.get("path"):
+        return Path(cfg["path"]).expanduser(), cfg
+    if mode == "cwd":
+        return Path.cwd() / (cfg.get("dir") or "papers"), cfg
+    return None, cfg
+
+
 # --- source identification ------------------------------------------------
 
 
@@ -358,12 +394,61 @@ def slugify(title: str, fallback: str) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Resolve a paper to its best available full text.")
-    ap.add_argument("source", help="arXiv ID/URL, DOI, publisher URL, or a title to search")
-    ap.add_argument("--out", default="papers",
-                    help="directory holding one folder per paper (default: papers)")
+    ap.add_argument("source", nargs="?",
+                    help="arXiv ID/URL, DOI, publisher URL, or a title to search")
+    ap.add_argument("--out", default=None,
+                    help="one-off override of the configured output directory")
+    ap.add_argument("--set-output", metavar="MODE:VALUE",
+                    help="remember where lectures go: 'fixed:/abs/path' for one "
+                         "location always, or 'cwd:papers' for <current dir>/papers")
+    ap.add_argument("--show-config", action="store_true",
+                    help="print the remembered output location and exit")
     ap.add_argument("--keep-comments", action="store_true",
                     help="keep whole-line LaTeX comments (stripped by default)")
     args = ap.parse_args()
+
+    if args.show_config:
+        cfg = load_config()
+        out, _ = resolve_out(None)
+        print(json.dumps({"config_path": str(CONFIG_PATH), "config": cfg,
+                          "resolves_to": str(out) if out else None},
+                         ensure_ascii=False, indent=2))
+        return 0
+
+    if args.set_output:
+        mode, _, val = args.set_output.partition(":")
+        if mode == "fixed":
+            if not val:
+                log("fixed: needs a path"); return 2
+            cfg = {"mode": "fixed", "path": str(Path(val).expanduser().resolve())}
+        elif mode == "cwd":
+            cfg = {"mode": "cwd", "dir": val or "papers"}
+        else:
+            log(f"unknown mode {mode!r}: use 'fixed:/abs/path' or 'cwd:papers'")
+            return 2
+        save_config(cfg)
+        out, _ = resolve_out(None)
+        print(json.dumps({"saved": str(CONFIG_PATH), "config": cfg,
+                          "resolves_to": str(out)}, ensure_ascii=False, indent=2))
+        return 0
+
+    if not args.source:
+        log("a source is required (arXiv ID, DOI, URL, or title)")
+        return 2
+
+    # Gate before any network call or mkdir: never download into a directory the
+    # user has not agreed to.
+    out_root, _cfg = resolve_out(args.out)
+    if out_root is None:
+        print(json.dumps({
+            "route": "needs-output-config",
+            "cwd": str(Path.cwd()),
+            "suggested_cwd_mode": str(Path.cwd() / "papers"),
+            "config_path": str(CONFIG_PATH),
+            "reason": "no output location has been chosen yet; ask the user, then "
+                      "re-run with --set-output 'fixed:/abs/path' or 'cwd:papers'",
+        }, ensure_ascii=False, indent=2))
+        return 0
 
     kind, value = identify(args.source)
     log(f"identified as {kind}: {value}")
@@ -416,7 +501,7 @@ def main() -> int:
     # One folder per paper: the source and the lecture the agent writes live
     # side by side. The folder is created only if there is something to put in
     # it — a failed lookup should not litter the tree with empty directories.
-    workdir = Path(args.out) / slug
+    workdir = out_root / slug
 
     result = {"slug": slug, "workdir": str(workdir), "meta": meta}
 

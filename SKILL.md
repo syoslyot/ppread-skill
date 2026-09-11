@@ -15,7 +15,7 @@ or URL, a DOI, a publisher URL, a paper title, or a local PDF path.
 ## Step 0: Fetch
 
 ```bash
-python3 ~/.claude/skills/ppread/fetch.py "<source>" --out papers
+python3 ~/.claude/skills/ppread/fetch.py "<source>"
 ```
 
 For a local PDF path, skip the script entirely and go straight to the PDF route
@@ -29,6 +29,36 @@ The script prints one JSON object. Read `route` and act:
 | `needs-html` | No LaTeX; an HTML full text may exist | Fetch `html_url` (or `page_url`) with Firecrawl `firecrawl_scrape`. |
 | `needs-pdf` | Only a PDF exists | Convert with MarkItDown MCP `convert_to_markdown`. |
 | `unresolved` | Nothing identified the reference | Stop. Tell the user what was tried and ask for an arXiv ID, a DOI, or a direct URL. Do not guess at which paper was meant. |
+| `needs-output-config` | No output location has ever been chosen | Ask (see below), save the answer, re-run Step 0. |
+
+### First run: ask where lectures go
+
+`needs-output-config` means this machine has never been told where papers
+belong. **Nothing was downloaded and no directory was created** — the check runs
+before any network call precisely so the question comes first.
+
+Ask the user, offering the two shapes an answer can take (the JSON carries `cwd`
+and `suggested_cwd_mode` to fill in concrete paths):
+
+- **One fixed library, always** — every paper lands in the same place no matter
+  where the agent was started. Save with:
+  ```bash
+  python3 ~/.claude/skills/ppread/fetch.py --set-output "fixed:/absolute/path"
+  ```
+- **`papers/` under whatever directory I am in** — a separate library per
+  project. Save with:
+  ```bash
+  python3 ~/.claude/skills/ppread/fetch.py --set-output "cwd:papers"
+  ```
+
+Then re-run Step 0. The answer lives in `~/.config/ppread/config.json` and is
+never asked again. `--show-config` prints what is remembered and where it
+currently resolves to; re-running `--set-output` changes it; `--out <dir>`
+overrides it for one run without changing it.
+
+**Never choose on the user's behalf.** Defaulting to `./papers` would mean
+creating a directory tree inside whatever repo or home directory the session
+happened to start in. That is the one mistake this gate exists to prevent.
 
 The JSON also carries `meta` (title, authors, year, DOI, arXiv ID, venue,
 abstract) and `slug`. Nothing is written to disk except the source itself —
