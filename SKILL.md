@@ -18,8 +18,10 @@ or URL, a DOI, a publisher URL, a paper title, or a local PDF path.
 python3 ~/.claude/skills/ppread/fetch.py "<source>"
 ```
 
-For a local PDF path, skip the script entirely and go straight to the PDF route
-in Step 1.
+A local file goes through the same script — do not skip it. `fetch.py` reads the
+file's own metadata for a title, creates `<output>/<slug>/`, and **moves** the
+file in, so a paper that arrived by hand ends up shaped exactly like one that was
+fetched: source and lecture in one folder.
 
 The script prints one JSON object. Read `route` and act:
 
@@ -30,6 +32,8 @@ The script prints one JSON object. Read `route` and act:
 | `needs-pdf` | Only a PDF exists | Convert to text — see "The PDF route" below. |
 | `unresolved` | Nothing identified the reference | Stop. Tell the user what was tried and ask for an arXiv ID, a DOI, or a direct URL. Do not guess at which paper was meant. |
 | `needs-output-config` | No output location has ever been chosen | Ask (see below), save the answer, re-run Step 0. |
+| `needs-title` | A local file with no title in its metadata | Read its first page (`pdftotext -f 1 -l 1 <file> -`), take the title, re-run with `--title "<title>"`. The file was **not** moved. |
+| `local` | A local non-PDF source (e.g. `.tex`) already in place | Read `source_path` directly. |
 
 ### The PDF route: getting readable text out
 
@@ -130,9 +134,14 @@ papers/attention-is-all-you-need/
     lecture.md     # what you write
 ```
 
-`<slug>` is the `slug` field from the fetch result. On a route with no LaTeX,
-`fetch.py` creates nothing — make the folder yourself and write only
-`lecture.md`.
+`<slug>` is the `slug` field from the fetch result. On a network route with no
+LaTeX, `fetch.py` creates nothing — make the folder yourself and write only
+`lecture.md`. On a local-file route the folder already exists and holds the moved
+file; write `lecture.md` beside it.
+
+The file is **moved, not copied**. Two copies of an 80-page thesis in one tree is
+not a library. If the destination already exists, `fetch.py` refuses rather than
+overwriting, and says so.
 
 **There is no separate metadata file.** Title, authors, year, DOI, arXiv ID,
 venue and fidelity tier all go in the lecture's YAML front matter, where a reader

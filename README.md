@@ -113,7 +113,7 @@ fetch.py <source> --out X  # 單次覆寫，不改設定
 /ppread 1706.03762
 /ppread 10.1109/CVPR.2016.90
 /ppread https://dl.acm.org/doi/10.1145/3292500.3330701
-/ppread ./downloaded-paper.pdf
+/ppread ./papers/某篇論文.pdf
 ```
 
 一篇論文一個資料夾，原始檔與講義放在一起：
@@ -127,6 +127,10 @@ papers/attention-is-all-you-need/
 
 metadata（標題、作者、年份、DOI、arXiv ID、保真度 tier）全部寫在 `lecture.md`
 的 YAML front matter，不另開 metadata 檔。
+
+手邊已經有 PDF 的話丟路徑即可，結構會一致：ppread 讀該檔自己的 metadata 取得
+標題，建立同名資料夾，並把檔案**移動**進去，跟從網路抓的論文長得一樣。檔案沒有
+標題 metadata 時會停下來要求補上，不會亂猜；目標已存在時拒絕覆寫。
 
 ## 它刻意不做的事
 

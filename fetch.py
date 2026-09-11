@@ -13,6 +13,8 @@ import io
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tarfile
 import time
@@ -111,6 +113,11 @@ def resolve_out(cli_out: str | None) -> tuple[Path | None, dict]:
 def identify(raw: str) -> tuple[str, str]:
     """Classify a user-supplied reference into (kind, value)."""
     s = raw.strip()
+
+    # A path that exists wins over every pattern below: a local file is not
+    # something to look up, and a filename can otherwise look like anything.
+    if Path(s).expanduser().is_file():
+        return "file", str(Path(s).expanduser().resolve())
 
     m = re.fullmatch(rf"(?:arxiv:)?({ARXIV_NEW}|{ARXIV_OLD})(v\d+)?", s, re.I)
     if m:
@@ -380,6 +387,70 @@ def assemble(root: Path, strip_comments: bool) -> str | None:
     return text
 
 
+# --- local files ---
+
+
+def pdf_title(path: Path) -> tuple[str, str, str]:
+    """(title, author, year) from the PDF's own metadata via pdfinfo, when
+    available. LaTeX-produced PDFs almost always carry a usable /Title."""
+    if not shutil.which("pdfinfo"):
+        return "", "", ""
+    try:
+        out = subprocess.run(["pdfinfo", str(path)], capture_output=True,
+                             text=True, timeout=20).stdout
+    except Exception as e:
+        log(f"  pdfinfo: {e}")
+        return "", "", ""
+    fields = {}
+    for line in out.splitlines():
+        k, _, v = line.partition(":")
+        fields[k.strip()] = v.strip()
+    year = ""
+    m = re.search(r"\b(19|20)\d{2}\b", fields.get("CreationDate", ""))
+    if m:
+        year = m.group(0)
+    return fields.get("Title", ""), fields.get("Author", ""), year
+
+
+def adopt_local(src: Path, out_root: Path, title_override: str) -> dict:
+    """Give a local file the same shape every other route produces: one folder per
+    paper, holding the source and (later) the lecture. The file is MOVED, not
+    copied — two copies of a 10 MB thesis in the same tree is not a library."""
+    title, author, year = pdf_title(src)
+    if title_override:
+        title = title_override
+    meta = {"title": title, "authors": [author] if author else [], "year": year,
+            "doi": "", "arxiv_id": "", "abstract": "", "venue": "",
+            "input": str(src)}
+
+    if not title:
+        return {"route": "needs-title", "meta": meta, "path": str(src),
+                "reason": "the file carries no title metadata; read its first page, "
+                          "then re-run with --title \"<the paper's title>\""}
+
+    slug = slugify(title, src.stem)
+    workdir = out_root / slug
+    dest = workdir / src.name
+
+    if dest.resolve() == src.resolve():
+        log("  already in place")
+    elif dest.exists():
+        return {"route": "needs-title", "meta": meta, "path": str(src),
+                "reason": f"{dest} already exists; refusing to overwrite"}
+    else:
+        workdir.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(dest))
+        log(f"  moved {src.name} -> {dest}")
+
+    ext = dest.suffix.lower()
+    return {"slug": slug, "workdir": str(workdir), "meta": meta,
+            "route": "needs-pdf" if ext == ".pdf" else "local",
+            "tier": 6 if ext == ".pdf" else 1,
+            "pdf_path": str(dest) if ext == ".pdf" else "",
+            "source_path": str(dest),
+            "reason": "local file; no LaTeX source available"}
+
+
 # --- output ---------------------------------------------------------------
 
 
@@ -401,6 +472,9 @@ def main() -> int:
     ap.add_argument("--set-output", metavar="MODE:VALUE",
                     help="remember where lectures go: 'fixed:/abs/path' for one "
                          "location always, or 'cwd:papers' for <current dir>/papers")
+    ap.add_argument("--title", default=None,
+                    help="title for a local file whose metadata has none; decides "
+                         "the folder name")
     ap.add_argument("--show-config", action="store_true",
                     help="print the remembered output location and exit")
     ap.add_argument("--keep-comments", action="store_true",
@@ -452,6 +526,11 @@ def main() -> int:
 
     kind, value = identify(args.source)
     log(f"identified as {kind}: {value}")
+
+    if kind == "file":
+        result = adopt_local(Path(value), out_root, args.title or "")
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
 
     meta: dict = {"title": "", "authors": [], "year": "", "doi": "", "arxiv_id": "",
                   "abstract": "", "venue": "", "input": args.source}
