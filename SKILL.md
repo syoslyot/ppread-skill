@@ -35,6 +35,7 @@ The script prints one JSON object. Read `route` and act:
 | `needs-pdf` | Only a PDF exists | Convert to text — see "The PDF route" below. |
 | `unresolved` | Nothing identified the reference | Stop. Tell the user what was tried and ask for an arXiv ID, a DOI, or a direct URL. Do not guess at which paper was meant. |
 | `needs-output-config` | No output location has ever been chosen | Ask (see below), save the answer, re-run Step 0. |
+| `conflict` | The folder this paper wants already belongs to another paper | Stop and ask the user — see "When two papers want one folder". Nothing was downloaded or moved. |
 | `needs-title` | A local file whose metadata has no title, or a title with no ASCII in it | Read its first page (`pdftotext -f 1 -l 1 <file> -`), take the **English** title — a paper written in another language usually prints one on page 1; translate it if it does not — and re-run with `--title "<title>"`. The file was **not** moved. |
 | `local` | A local non-PDF source (e.g. `.tex`) already in place | Read `source_path` directly. |
 
@@ -152,8 +153,32 @@ yourself at `workdir` and write only `lecture.md`. On a local-file route the
 folder already exists and holds the moved file; write `lecture.md` beside it.
 
 The file is **moved, not copied**. Two copies of an 80-page thesis in one tree is
-not a library. If the destination already exists, `fetch.py` refuses rather than
-overwriting, and says so.
+not a library.
+
+### When two papers want one folder
+
+The folder name comes from the title, so two papers can ask for the same one —
+two papers actually named `A Survey of Federated Learning`, a workshop paper
+later reprinted under its own title, or two long titles that agree for the first
+60 characters. `fetch.py` returns `route: conflict` and writes nothing: no
+download, no `mkdir`, and a local file stays exactly where it was.
+
+It decides by reading the front matter of the `lecture.md` already in that folder
+— the arXiv ID settles it, then the DOI, and only failing both does it compare
+titles. A folder holding a source file but no `lecture.md` cannot be identified at
+all, so that is reported too rather than guessed at.
+
+**Do not resolve this alone, and never work around it by renaming the folder.**
+The name is derived from the title; a hand-renamed folder is one the next run
+will not find, and it will fetch the paper a second time. Show the user both
+papers — `occupant` in the JSON is the resident one, `meta` the incoming one —
+and ask which case it is:
+
+- **The same paper** (a re-download, a newer version) — the user deletes or
+  renames the old folder, then Step 0 runs again.
+- **Genuinely different papers** — re-run with `--title "<a title that tells the
+  two apart>"`, which changes the folder name for this run only. `--out <dir>`
+  works too, but it puts the paper outside the library.
 
 **There is no separate metadata file.** Title, authors, year, DOI, arXiv ID,
 venue and fidelity tier all go in the lecture's YAML front matter, where a reader

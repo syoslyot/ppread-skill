@@ -412,6 +412,83 @@ def pdf_title(path: Path) -> tuple[str, str, str]:
     return fields.get("Title", ""), fields.get("Author", ""), year
 
 
+# --- folder identity ------------------------------------------------------
+#
+# One folder holds one paper. Two papers can still want the same folder: the slug
+# comes from the title, and titles collide ("A Survey of ..." twice over, a
+# workshop paper later reprinted, a 60-char truncation that erases the difference).
+# Left unchecked the damage is silent — lecture.md ends up describing a different
+# paper than the source lying next to it, and nothing in either file says so.
+
+
+def lecture_identity(workdir: Path) -> dict | None:
+    """Which paper a folder already holds, read from lecture.md's YAML front
+    matter. That front matter is the only on-disk record of it — ppread writes no
+    meta.json on purpose — and its keys are fixed by lecture-format.md, so a plain
+    'key: value' scan is exact here and needs no YAML parser. None means no lecture
+    yet; an empty dict means one exists but identifies nothing."""
+    f = workdir / "lecture.md"
+    if not f.is_file():
+        return None
+    try:
+        text = f.read_text("utf-8", errors="replace")
+    except OSError as e:
+        log(f"  lecture.md: {e}")
+        return {}
+    if not text.startswith("---"):
+        return {}
+    body = text.partition("\n")[2].partition("\n---")[0]
+    ident = {}
+    for line in body.splitlines():
+        k, sep, v = line.partition(":")
+        if sep and k.strip() in ("title", "doi", "arxiv"):
+            ident[k.strip()] = v.strip().strip("\"'")
+    return ident
+
+
+def _norm_arxiv(v: str) -> str:
+    return re.sub(r"^arxiv:|v\d+$", "", (v or "").strip().lower())
+
+
+def _norm_title(v: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (v or "").lower()).strip()
+
+
+def same_paper(ident: dict, meta: dict) -> bool:
+    """Strongest available identifier wins. An arXiv id or a DOI settles it
+    outright; only when one side lacks both does the comparison fall back to the
+    title, normalised so that casing and punctuation do not fake a conflict."""
+    a1, a2 = _norm_arxiv(ident.get("arxiv", "")), _norm_arxiv(meta.get("arxiv_id", ""))
+    if a1 and a2:
+        return a1 == a2
+    d1, d2 = (ident.get("doi", "") or "").strip().lower(), (meta.get("doi", "") or "").strip().lower()
+    if d1 and d2:
+        return d1 == d2
+    t1, t2 = _norm_title(ident.get("title", "")), _norm_title(meta.get("title", ""))
+    return bool(t1) and t1 == t2
+
+
+RESOLVE = ("if it is the same paper, delete or rename the folder that is already "
+           "there; if it is a different paper, re-run with --title \"<a title that "
+           "tells the two apart>\" or --out <another directory>. Do not rename the "
+           "folder by hand afterwards — fetch.py derives it from the title.")
+
+
+def folder_conflict(workdir: Path, meta: dict, slug: str) -> dict | None:
+    """A conflict result, or None when the folder is free or already this paper's."""
+    ident = lecture_identity(workdir)
+    if ident is None or same_paper(ident, meta):
+        return None
+    held = ident.get("title") or ident.get("arxiv") or ident.get("doi")
+    return {"route": "conflict", "slug": slug, "workdir": str(workdir), "meta": meta,
+            "occupant": {k: ident.get(k, "") for k in ("title", "doi", "arxiv")},
+            "reason": f"{workdir} already holds a lecture for "
+                      + (f"a different paper ({held})" if held
+                         else "a paper it does not identify")
+                      + "; refusing to put a second paper in one folder",
+            "resolve": RESOLVE}
+
+
 def adopt_local(src: Path, out_override: Path | None, title_override: str) -> dict:
     """Give a local file the same shape every other route produces: one folder per
     paper, holding the source and (later) the lecture. The folder is created BESIDE
@@ -450,12 +527,30 @@ def adopt_local(src: Path, out_override: Path | None, title_override: str) -> di
         workdir = src.parent / slug
     dest = workdir / src.name
 
+    conflict = folder_conflict(workdir, meta, slug)
+    if conflict:
+        return conflict | {"path": str(src)}
+
     if dest.resolve() == src.resolve():
         log("  already in place")
     elif dest.exists():
-        return {"route": "needs-title", "meta": meta, "path": str(src),
-                "reason": f"{dest} already exists; refusing to overwrite"}
+        return {"route": "conflict", "slug": slug, "workdir": str(workdir),
+                "meta": meta, "path": str(src),
+                "reason": f"{dest} already exists; refusing to overwrite it",
+                "resolve": RESOLVE}
     else:
+        # No lecture to identify the folder by, but something is already in it.
+        # Whether that is this same paper under another filename or a different
+        # paper entirely, nothing here can tell — and both leave two sources in a
+        # folder meant for one, so say so instead of quietly adding to the pile.
+        others = sorted(p.name for p in workdir.glob("*")
+                        if p.is_file() and p.name != "lecture.md")
+        if others:
+            return {"route": "conflict", "slug": slug, "workdir": str(workdir),
+                    "meta": meta, "path": str(src), "occupant": {"files": others},
+                    "reason": f"{workdir} already holds {', '.join(others)} and no "
+                              "lecture.md saying which paper that is",
+                    "resolve": RESOLVE}
         workdir.mkdir(parents=True, exist_ok=True)
         shutil.move(str(src), str(dest))
         log(f"  moved {src.name} -> {dest}")
@@ -500,8 +595,10 @@ def main() -> int:
                     help="remember where lectures go: 'fixed:/abs/path' for one "
                          "location always, or 'cwd:papers' for <current dir>/papers")
     ap.add_argument("--title", default=None,
-                    help="English title for a local file whose metadata has none or "
-                         "has no ASCII title; decides the folder name")
+                    help="English title overriding the one found; decides the folder "
+                         "name. Needed for a local file whose metadata has no title "
+                         "or no ASCII in it, and to separate two papers whose titles "
+                         "land on the same folder")
     ap.add_argument("--show-config", action="store_true",
                     help="print the remembered output location and exit")
     ap.add_argument("--keep-comments", action="store_true",
@@ -606,11 +703,19 @@ def main() -> int:
             if v and not meta.get(k):
                 meta[k] = v
 
-    slug = slugify(meta["title"], meta["arxiv_id"] or "paper")
+    slug = slugify(args.title or meta["title"], meta["arxiv_id"] or "paper")
     # One folder per paper: the source and the lecture the agent writes live
     # side by side. The folder is created only if there is something to put in
     # it — a failed lookup should not litter the tree with empty directories.
     workdir = out_root / slug
+
+    # Before the download, not after: a folder that turns out to belong to another
+    # paper makes the whole fetch pointless, and finding that out first costs one
+    # stat instead of a 10 MB e-print.
+    conflict = folder_conflict(workdir, meta, slug)
+    if conflict:
+        print(json.dumps(conflict, ensure_ascii=False, indent=2))
+        return 0
 
     result = {"slug": slug, "workdir": str(workdir), "meta": meta}
 
