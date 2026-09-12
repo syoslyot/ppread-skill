@@ -412,10 +412,13 @@ def pdf_title(path: Path) -> tuple[str, str, str]:
     return fields.get("Title", ""), fields.get("Author", ""), year
 
 
-def adopt_local(src: Path, out_root: Path, title_override: str) -> dict:
+def adopt_local(src: Path, out_override: Path | None, title_override: str) -> dict:
     """Give a local file the same shape every other route produces: one folder per
-    paper, holding the source and (later) the lecture. The file is MOVED, not
-    copied — two copies of a 10 MB thesis in the same tree is not a library."""
+    paper, holding the source and (later) the lecture. The folder is created BESIDE
+    the file: the file already sits where the user put it, and hauling it off to the
+    configured library would relocate something nobody asked to have moved. Into
+    that folder the file is MOVED, not copied — two copies of a 10 MB thesis in the
+    same tree is not a library."""
     title, author, year = pdf_title(src)
     if title_override:
         title = title_override
@@ -428,8 +431,23 @@ def adopt_local(src: Path, out_root: Path, title_override: str) -> dict:
                 "reason": "the file carries no title metadata; read its first page, "
                           "then re-run with --title \"<the paper's title>\""}
 
-    slug = slugify(title, src.stem)
-    workdir = out_root / slug
+    # No filename fallback here: a title exists by this point, and falling back to
+    # the stem would name a folder "thesis-final-v3" while a real title was in hand.
+    slug = slugify(title, "")
+    if not slug:
+        return {"route": "needs-title", "meta": meta, "path": str(src),
+                "reason": f"the title {title!r} leaves no ASCII characters to name a "
+                          "folder with; re-run with --title \"<the paper's English "
+                          "title>\""}
+
+    # A second run on an already-adopted file must land on the same folder, not
+    # nest a <slug>/<slug>/ inside it.
+    if out_override is not None:
+        workdir = out_override / slug
+    elif src.parent.name == slug:
+        workdir = src.parent
+    else:
+        workdir = src.parent / slug
     dest = workdir / src.name
 
     if dest.resolve() == src.resolve():
@@ -455,12 +473,19 @@ def adopt_local(src: Path, out_root: Path, title_override: str) -> dict:
 
 
 def slugify(title: str, fallback: str) -> str:
-    if not title:
-        return fallback
+    """ASCII, lowercase, hyphen-separated. The folder name gets pasted into shell
+    commands (pdftotext, markitdown) and into Markdown links, where a space has to
+    be quoted in one and percent-escaped in the other. NFKD plus an ASCII round
+    trip folds accents onto their base letters (Scholkopf, not Sch_lkopf) and drops
+    what has no ASCII form at all, so a title in another script yields "" and the
+    caller asks for an English one rather than inventing a name."""
     t = unicodedata.normalize("NFKD", title)
-    t = re.sub(r"[^\w\s-]", "", t, flags=re.U).strip().lower()
+    t = t.encode("ascii", "ignore").decode()
+    t = re.sub(r"[^\w\s-]", "", t).strip().lower()
     t = re.sub(r"[\s_]+", "-", t)
-    return t[:60].strip("-") or fallback
+    if len(t) > 60:  # cut back to a word boundary rather than leaving "...netwo"
+        t = t[:60].rpartition("-")[0] or t[:60]
+    return t.strip("-") or fallback
 
 
 def main() -> int:
@@ -468,13 +493,15 @@ def main() -> int:
     ap.add_argument("source", nargs="?",
                     help="arXiv ID/URL, DOI, publisher URL, or a title to search")
     ap.add_argument("--out", default=None,
-                    help="one-off override of the configured output directory")
+                    help="one-off override of the output directory: the configured "
+                         "library on a network route, or the input file's own "
+                         "directory on a local one")
     ap.add_argument("--set-output", metavar="MODE:VALUE",
                     help="remember where lectures go: 'fixed:/abs/path' for one "
                          "location always, or 'cwd:papers' for <current dir>/papers")
     ap.add_argument("--title", default=None,
-                    help="title for a local file whose metadata has none; decides "
-                         "the folder name")
+                    help="English title for a local file whose metadata has none or "
+                         "has no ASCII title; decides the folder name")
     ap.add_argument("--show-config", action="store_true",
                     help="print the remembered output location and exit")
     ap.add_argument("--keep-comments", action="store_true",
@@ -510,6 +537,17 @@ def main() -> int:
         log("a source is required (arXiv ID, DOI, URL, or title)")
         return 2
 
+    kind, value = identify(args.source)
+    log(f"identified as {kind}: {value}")
+
+    # A local file carries its own destination — the folder goes next to it — so
+    # this route never has to ask the library question below.
+    if kind == "file":
+        override = Path(args.out).expanduser() if args.out else None
+        result = adopt_local(Path(value), override, args.title or "")
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
     # Gate before any network call or mkdir: never download into a directory the
     # user has not agreed to.
     out_root, _cfg = resolve_out(args.out)
@@ -522,14 +560,6 @@ def main() -> int:
             "reason": "no output location has been chosen yet; ask the user, then "
                       "re-run with --set-output 'fixed:/abs/path' or 'cwd:papers'",
         }, ensure_ascii=False, indent=2))
-        return 0
-
-    kind, value = identify(args.source)
-    log(f"identified as {kind}: {value}")
-
-    if kind == "file":
-        result = adopt_local(Path(value), out_root, args.title or "")
-        print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
 
     meta: dict = {"title": "", "authors": [], "year": "", "doi": "", "arxiv_id": "",

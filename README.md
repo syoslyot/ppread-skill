@@ -92,7 +92,8 @@ cd ppread-skill && ./deploy.sh      # → ~/.claude/skills/ppread/
 - **固定一個位置** — 不管從哪個目錄啟動，論文都進同一個資料庫
 - **當前目錄下的 `papers/`** — 每個專案各有各的資料庫
 
-答案記在 `~/.config/ppread/config.json`，之後不再問。
+答案記在 `~/.config/ppread/config.json`，之後不再問。這個問題只對網路來源有意義；
+本機檔案的位置由檔案自己決定（見下），不會問也不需要設定。
 
 ```bash
 # 直接設定，跳過詢問
@@ -119,18 +120,28 @@ fetch.py <source> --out X  # 單次覆寫，不改設定
 一篇論文一個資料夾，原始檔與講義放在一起：
 
 ```
-papers/attention-is-all-you-need/
-    source.tex     # 只有走 LaTeX 路線才有
-    src/           # 解壓出的 e-print 樹，圖檔在這裡
-    lecture.md     # 講義
+<資料庫>/attention-is-all-you-need/       # 網路來源：進設定好的資料庫
+~/Downloads/attention-is-all-you-need/   # 本機檔案：就建在該檔案旁邊
+    source.tex       # 只有走 LaTeX 路線才有
+    src/             # 解壓出的 e-print 樹，圖檔在這裡
+    1706.03762.pdf   # 只有本機路線才有：被移進來的原檔
+    lecture.md       # 講義
 ```
+
+資料夾名稱一律是純 ASCII、小寫、以 `-` 連接的英文 slug，從論文英文標題產生
+（`Attention Is All You Need` → `attention-is-all-you-need`）。不用空白是因為這個
+路徑會被貼進 shell 指令（`pdftotext`、`markitdown`）與 Markdown 連結裡，前者空白要
+引號、後者要 percent-escape，兩邊都會出事。重音字母折成基底字母（`Schölkopf` →
+`scholkopf`）；完全沒有 ASCII 可用的標題會停下來要求補英文標題，不會亂猜。
 
 metadata（標題、作者、年份、DOI、arXiv ID、保真度 tier）全部寫在 `lecture.md`
 的 YAML front matter，不另開 metadata 檔。
 
-手邊已經有 PDF 的話丟路徑即可，結構會一致：ppread 讀該檔自己的 metadata 取得
-標題，建立同名資料夾，並把檔案**移動**進去，跟從網路抓的論文長得一樣。檔案沒有
-標題 metadata 時會停下來要求補上，不會亂猜；目標已存在時拒絕覆寫。
+手邊已經有 PDF 的話丟路徑即可，結構會一致：ppread 讀該檔自己的 metadata 取得標題，
+**在該檔案的同一層**建立以標題命名的資料夾，並把檔案**移動**進去，跟從網路抓的
+論文長得一樣。本機檔案不會被搬進設定好的資料庫——它本來就放在使用者選的位置，
+擅自搬走是沒被要求的行為。檔案沒有標題 metadata 時會停下來要求補上，不會亂猜；
+目標已存在時拒絕覆寫；對已經收納過的檔案再跑一次會落在同一個資料夾，不會巢狀。
 
 ## 它刻意不做的事
 

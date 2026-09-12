@@ -1,6 +1,6 @@
 ---
 name: ppread
-description: "Paragraph-by-paragraph bilingual close reading of a research paper — invoke with /ppread <arXiv ID | DOI | URL | PDF path>. Fetches the highest-fidelity full text available (arXiv LaTeX source first, falling back through HTML to PDF), then writes a Traditional Chinese lecture to papers/<slug>/lecture.md, beside the source it fetched: for each passage, the English original, a translation, and an explanation covering background, prior work, experimental rationale and formula breakdown. Stops at the lecture and never writes the user's own notes."
+description: "Paragraph-by-paragraph bilingual close reading of a research paper — invoke with /ppread <arXiv ID | DOI | URL | PDF path>. Fetches the highest-fidelity full text available (arXiv LaTeX source first, falling back through HTML to PDF), then writes a Traditional Chinese lecture to <slug>/lecture.md beside the source — for a local PDF that folder is created next to the file itself, named after the paper's English title: for each passage, the English original, a translation, and an explanation covering background, prior work, experimental rationale and formula breakdown. Stops at the lecture and never writes the user's own notes."
 ---
 
 # /ppread — Paper Close Reading
@@ -19,9 +19,12 @@ python3 ~/.claude/skills/ppread/fetch.py "<source>"
 ```
 
 A local file goes through the same script — do not skip it. `fetch.py` reads the
-file's own metadata for a title, creates `<output>/<slug>/`, and **moves** the
-file in, so a paper that arrived by hand ends up shaped exactly like one that was
-fetched: source and lecture in one folder.
+file's own metadata for a title, creates `<slug>/` **in the directory the file is
+already in**, and **moves** the file in, so a paper that arrived by hand ends up
+shaped exactly like one that was fetched: source and lecture in one folder. A
+local file is never relocated into the configured library — it already sits where
+the user put it — and for the same reason it never triggers the output-location
+question below.
 
 The script prints one JSON object. Read `route` and act:
 
@@ -32,7 +35,7 @@ The script prints one JSON object. Read `route` and act:
 | `needs-pdf` | Only a PDF exists | Convert to text — see "The PDF route" below. |
 | `unresolved` | Nothing identified the reference | Stop. Tell the user what was tried and ask for an arXiv ID, a DOI, or a direct URL. Do not guess at which paper was meant. |
 | `needs-output-config` | No output location has ever been chosen | Ask (see below), save the answer, re-run Step 0. |
-| `needs-title` | A local file with no title in its metadata | Read its first page (`pdftotext -f 1 -l 1 <file> -`), take the title, re-run with `--title "<title>"`. The file was **not** moved. |
+| `needs-title` | A local file whose metadata has no title, or a title with no ASCII in it | Read its first page (`pdftotext -f 1 -l 1 <file> -`), take the **English** title — a paper written in another language usually prints one on page 1; translate it if it does not — and re-run with `--title "<title>"`. The file was **not** moved. |
 | `local` | A local non-PDF source (e.g. `.tex`) already in place | Read `source_path` directly. |
 
 ### The PDF route: getting readable text out
@@ -66,7 +69,8 @@ never infer them. The real fix is always to climb back to tier 1.
 
 `needs-output-config` means this machine has never been told where papers
 belong. **Nothing was downloaded and no directory was created** — the check runs
-before any network call precisely so the question comes first.
+before any network call precisely so the question comes first. Only network routes
+reach it; a local file answers the question by its own location.
 
 Ask the user, offering the two shapes an answer can take (the JSON carries `cwd`
 and `suggested_cwd_mode` to fill in concrete paths):
@@ -124,20 +128,28 @@ Write **one section per pass**, appending to the file. Never try to emit the
 whole paper in a single response — long papers overflow and quality collapses
 near the end. After each section, state what was completed and continue.
 
-Output path: **`papers/<slug>/lecture.md`** — the same folder `fetch.py` put the
-source in, so everything about one paper lives together:
+Output path: **`<workdir>/lecture.md`**, where `workdir` is the field of that name
+in the fetch result — the same folder `fetch.py` put the source in, so everything
+about one paper lives together:
 
 ```
-papers/attention-is-all-you-need/
+<library>/attention-is-all-you-need/     # network route: the configured library
+~/Downloads/attention-is-all-you-need/   # local route: beside the file itself
     source.tex     # only on the latex route; absent otherwise
     src/           # unpacked e-print tree — figures live here
+    1706.03762.pdf # only on the local route: the file, moved in
     lecture.md     # what you write
 ```
 
-`<slug>` is the `slug` field from the fetch result. On a network route with no
-LaTeX, `fetch.py` creates nothing — make the folder yourself and write only
-`lecture.md`. On a local-file route the folder already exists and holds the moved
-file; write `lecture.md` beside it.
+The folder is named `<slug>` — the `slug` field from the fetch result — which is
+always ASCII, lowercase and hyphenated, derived from the paper's English title.
+Spaces are not used: the path gets pasted into shell commands (`pdftotext`,
+`markitdown`) where a space needs quoting, and into Markdown links where it needs
+percent-escaping. Do not rename the folder.
+
+On a network route with no LaTeX, `fetch.py` creates nothing — make the folder
+yourself at `workdir` and write only `lecture.md`. On a local-file route the
+folder already exists and holds the moved file; write `lecture.md` beside it.
 
 The file is **moved, not copied**. Two copies of an 80-page thesis in one tree is
 not a library. If the destination already exists, `fetch.py` refuses rather than
