@@ -68,8 +68,45 @@ cd ppread-skill && ./deploy.sh      # → ~/.claude/skills/ppread/
 只需要 `python3`（>=3.10）。`fetch.py` 純標準函式庫，沒有任何第三方依賴，
 也不需要 pandoc——LaTeX 直接交給 agent 讀，不做格式轉換。
 
+**PDF 路線的選用依賴。** 只有在論文既沒有 arXiv 原始碼也沒有 HTML 全文時才會用到，
+依序偵測、有哪個用哪個，都沒有才會提示安裝：
+
+| 優先 | 工具 | 取得方式 |
+|---|---|---|
+| 1 | MarkItDown MCP | Claude Code 的 MCP server |
+| 2 | `markitdown` CLI | `pip install 'markitdown[pdf]'` |
+| 3 | `pdftotext -layout` | 多數 Linux 內建（`poppler-utils`） |
+
+要注意的是這些工具改善的是**結構**（標題、表格、雙欄順序），不是**公式**。PDF 裡
+只有字形座標，沒有上標／分數／求和上下限這類結構資訊，那在檔案產生時就已經消失，
+任何工具都還原不回來。裝了 MarkItDown 會讓 tier 6 更好讀，不會更正確——真正的解法
+永遠是爬回 tier 1 拿 LaTeX 原始碼。
+
 選用：`export PPREAD_CONTACT=you@example.com` 可進入 Crossref 的 polite pool
 （較快的查詢佇列）。不設也完全能用。
+
+## 第一次執行：決定講義放哪裡
+
+第一次跑 `/ppread` 時會先問一個問題，**在下載任何東西之前**：
+
+- **固定一個位置** — 不管從哪個目錄啟動，論文都進同一個資料庫
+- **當前目錄下的 `papers/`** — 每個專案各有各的資料庫
+
+答案記在 `~/.config/ppread/config.json`，之後不再問。這個問題只對網路來源有意義；
+本機檔案的位置由檔案自己決定（見下），不會問也不需要設定。
+
+```bash
+# 直接設定，跳過詢問
+fetch.py --set-output "fixed:/home/me/research/papers"
+fetch.py --set-output "cwd:papers"
+
+fetch.py --show-config     # 看目前設定與實際解析到的路徑
+fetch.py <source> --out X  # 單次覆寫，不改設定
+```
+
+刻意不給預設值：預設成 `./papers` 意味著在 session 恰好啟動的任何目錄裡憑空長出
+一個資料夾——可能是別人的 repo，可能是家目錄。這個問題只問一次，換來的是這個
+工具永遠不會寫到沒被同意的地方。
 
 ## 用法
 
@@ -77,11 +114,41 @@ cd ppread-skill && ./deploy.sh      # → ~/.claude/skills/ppread/
 /ppread 1706.03762
 /ppread 10.1109/CVPR.2016.90
 /ppread https://dl.acm.org/doi/10.1145/3292500.3330701
-/ppread ./downloaded-paper.pdf
+/ppread ./papers/某篇論文.pdf
 ```
 
-產出在 `reading/<論文標題>.md`，中間檔在 `.ppread/`（dot 開頭，Obsidian 不會索引）。
-在 Obsidian vault 裡跑，講義可直接用 `[[wikilink]]` 連結。
+一篇論文一個資料夾，原始檔與講義放在一起：
+
+```
+<資料庫>/attention-is-all-you-need/       # 網路來源：進設定好的資料庫
+~/Downloads/attention-is-all-you-need/   # 本機檔案：就建在該檔案旁邊
+    source.tex       # 只有走 LaTeX 路線才有
+    src/             # 解壓出的 e-print 樹，圖檔在這裡
+    1706.03762.pdf   # 只有本機路線才有：被移進來的原檔
+    lecture.md       # 講義
+```
+
+資料夾名稱一律是純 ASCII、小寫、以 `-` 連接的英文 slug，從論文英文標題產生
+（`Attention Is All You Need` → `attention-is-all-you-need`）。不用空白是因為這個
+路徑會被貼進 shell 指令（`pdftotext`、`markitdown`）與 Markdown 連結裡，前者空白要
+引號、後者要 percent-escape，兩邊都會出事。重音字母折成基底字母（`Schölkopf` →
+`scholkopf`）；完全沒有 ASCII 可用的標題會停下來要求補英文標題，不會亂猜。
+
+metadata（標題、作者、年份、DOI、arXiv ID、保真度 tier）全部寫在 `lecture.md`
+的 YAML front matter，不另開 metadata 檔。
+
+手邊已經有 PDF 的話丟路徑即可，結構會一致：ppread 讀該檔自己的 metadata 取得標題，
+**在該檔案的同一層**建立以標題命名的資料夾，並把檔案**移動**進去，跟從網路抓的
+論文長得一樣。本機檔案不會被搬進設定好的資料庫——它本來就放在使用者選的位置，
+擅自搬走是沒被要求的行為。檔案沒有標題 metadata 時會停下來要求補上，不會亂猜；
+目標已存在時拒絕覆寫；對已經收納過的檔案再跑一次會落在同一個資料夾，不會巢狀。
+
+資料夾名稱來自標題，所以兩篇論文可能搶同一個資料夾——真的同名的兩篇 survey、
+研討會版與期刊版、或是前 60 字元相同的兩個長標題。這時回 `route: conflict` 並且
+**什麼都不寫**：不下載、不建資料夾，本機檔案留在原處。判斷依據是該資料夾裡
+`lecture.md` 的 front matter：arXiv ID 最優先，其次 DOI，兩者都沒有才比標題。
+解法是刪掉舊資料夾（確實是同一篇）或用 `--title "<能區分的標題>"` 重跑（確實是兩篇），
+不要手動改資料夾名字——名字是從標題推出來的，改掉之後下次會找不到而重抓一次。
 
 ## 它刻意不做的事
 

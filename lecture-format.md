@@ -4,17 +4,22 @@
 
 ## 檔頭
 
+這份 front matter 是這篇論文**唯一**的 metadata 來源——不另外寫 meta.json。
+欄位全部來自 `fetch.py` 輸出的 `meta`，缺的留空不要刪。
+
 ```markdown
 ---
 type: reading
 generated: claude
-tier: 1
-source: arXiv:1706.03762
-doi:
 title: Attention Is All You Need
-authors: [Ashish Vaswani, Noam Shazeer, ...]
+authors: [Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Lukasz Kaiser, Illia Polosukhin]
 year: 2017
-created: 2026-09-11
+venue:
+doi:
+arxiv: 1706.03762
+url: https://arxiv.org/abs/1706.03762
+tier: 1
+created: 2026-09-12
 ---
 
 # Attention Is All You Need
@@ -24,7 +29,11 @@ created: 2026-09-11
 > **預設的背景知識**　（列出論文沒寫、但讀者不知道就會卡住的東西）
 ```
 
-`generated: claude` 這欄不可省略。它明示這份檔案是機器產物、可重生，與使用者自己寫的筆記在性質上不同。
+`generated: claude` 這欄不可省略。它明示這份檔案是機器產物、可重生，與 `notes/`
+底下自己寫的卡片在性質上不同——後者不可重生，那才是卡片盒的核心資產。
+
+`tier` 也不可省略：tier 1 代表公式與引用取自 LaTeX 原始碼、精確；tier 5–6 代表
+是從 PDF 還原的，可能有誤。讀者有權知道自己在讀哪一種。
 
 ## 段落單元
 

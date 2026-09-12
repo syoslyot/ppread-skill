@@ -13,6 +13,8 @@ import io
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tarfile
 import time
@@ -69,12 +71,53 @@ def get(url: str, accept: str | None = None, retries: int = 3,
     raise RuntimeError("unreachable")
 
 
+# --- output location config ---
+#
+# Where lectures land is the one thing this tool cannot infer. Guessing means
+# writing into whatever directory the agent happened to start in — someone
+# else's repo, a home directory. So the location is asked once and remembered.
+
+CONFIG_PATH = (Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+               / "ppread" / "config.json")
+
+
+def load_config() -> dict:
+    try:
+        return json.loads(CONFIG_PATH.read_text("utf-8"))
+    except Exception:
+        return {}
+
+
+def save_config(cfg: dict) -> None:
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", "utf-8")
+
+
+def resolve_out(cli_out: str | None) -> tuple[Path | None, dict]:
+    """(destination, config). A None destination means nothing is configured yet
+    and the caller must ask before touching the network or the filesystem."""
+    cfg = load_config()
+    if cli_out:
+        return Path(cli_out).expanduser(), cfg
+    mode = cfg.get("mode")
+    if mode == "fixed" and cfg.get("path"):
+        return Path(cfg["path"]).expanduser(), cfg
+    if mode == "cwd":
+        return Path.cwd() / (cfg.get("dir") or "papers"), cfg
+    return None, cfg
+
+
 # --- source identification ------------------------------------------------
 
 
 def identify(raw: str) -> tuple[str, str]:
     """Classify a user-supplied reference into (kind, value)."""
     s = raw.strip()
+
+    # A path that exists wins over every pattern below: a local file is not
+    # something to look up, and a filename can otherwise look like anything.
+    if Path(s).expanduser().is_file():
+        return "file", str(Path(s).expanduser().resolve())
 
     m = re.fullmatch(rf"(?:arxiv:)?({ARXIV_NEW}|{ARXIV_OLD})(v\d+)?", s, re.I)
     if m:
@@ -344,28 +387,277 @@ def assemble(root: Path, strip_comments: bool) -> str | None:
     return text
 
 
+# --- local files ---
+
+
+def pdf_title(path: Path) -> tuple[str, str, str]:
+    """(title, author, year) from the PDF's own metadata via pdfinfo, when
+    available. LaTeX-produced PDFs almost always carry a usable /Title."""
+    if not shutil.which("pdfinfo"):
+        return "", "", ""
+    try:
+        out = subprocess.run(["pdfinfo", str(path)], capture_output=True,
+                             text=True, timeout=20).stdout
+    except Exception as e:
+        log(f"  pdfinfo: {e}")
+        return "", "", ""
+    fields = {}
+    for line in out.splitlines():
+        k, _, v = line.partition(":")
+        fields[k.strip()] = v.strip()
+    year = ""
+    m = re.search(r"\b(19|20)\d{2}\b", fields.get("CreationDate", ""))
+    if m:
+        year = m.group(0)
+    return fields.get("Title", ""), fields.get("Author", ""), year
+
+
+# --- folder identity ------------------------------------------------------
+#
+# One folder holds one paper. Two papers can still want the same folder: the slug
+# comes from the title, and titles collide ("A Survey of ..." twice over, a
+# workshop paper later reprinted, a 60-char truncation that erases the difference).
+# Left unchecked the damage is silent — lecture.md ends up describing a different
+# paper than the source lying next to it, and nothing in either file says so.
+
+
+def lecture_identity(workdir: Path) -> dict | None:
+    """Which paper a folder already holds, read from lecture.md's YAML front
+    matter. That front matter is the only on-disk record of it — ppread writes no
+    meta.json on purpose — and its keys are fixed by lecture-format.md, so a plain
+    'key: value' scan is exact here and needs no YAML parser. None means no lecture
+    yet; an empty dict means one exists but identifies nothing."""
+    f = workdir / "lecture.md"
+    if not f.is_file():
+        return None
+    try:
+        text = f.read_text("utf-8", errors="replace")
+    except OSError as e:
+        log(f"  lecture.md: {e}")
+        return {}
+    if not text.startswith("---"):
+        return {}
+    body = text.partition("\n")[2].partition("\n---")[0]
+    ident = {}
+    for line in body.splitlines():
+        k, sep, v = line.partition(":")
+        if sep and k.strip() in ("title", "doi", "arxiv"):
+            ident[k.strip()] = v.strip().strip("\"'")
+    return ident
+
+
+def _norm_arxiv(v: str) -> str:
+    return re.sub(r"^arxiv:|v\d+$", "", (v or "").strip().lower())
+
+
+def _norm_title(v: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (v or "").lower()).strip()
+
+
+def same_paper(ident: dict, meta: dict) -> bool:
+    """Strongest available identifier wins. An arXiv id or a DOI settles it
+    outright; only when one side lacks both does the comparison fall back to the
+    title, normalised so that casing and punctuation do not fake a conflict."""
+    a1, a2 = _norm_arxiv(ident.get("arxiv", "")), _norm_arxiv(meta.get("arxiv_id", ""))
+    if a1 and a2:
+        return a1 == a2
+    d1, d2 = (ident.get("doi", "") or "").strip().lower(), (meta.get("doi", "") or "").strip().lower()
+    if d1 and d2:
+        return d1 == d2
+    t1, t2 = _norm_title(ident.get("title", "")), _norm_title(meta.get("title", ""))
+    return bool(t1) and t1 == t2
+
+
+RESOLVE = ("if it is the same paper, delete or rename the folder that is already "
+           "there; if it is a different paper, re-run with --title \"<a title that "
+           "tells the two apart>\" or --out <another directory>. Do not rename the "
+           "folder by hand afterwards — fetch.py derives it from the title.")
+
+
+def folder_conflict(workdir: Path, meta: dict, slug: str) -> dict | None:
+    """A conflict result, or None when the folder is free or already this paper's."""
+    ident = lecture_identity(workdir)
+    if ident is None or same_paper(ident, meta):
+        return None
+    held = ident.get("title") or ident.get("arxiv") or ident.get("doi")
+    return {"route": "conflict", "slug": slug, "workdir": str(workdir), "meta": meta,
+            "occupant": {k: ident.get(k, "") for k in ("title", "doi", "arxiv")},
+            "reason": f"{workdir} already holds a lecture for "
+                      + (f"a different paper ({held})" if held
+                         else "a paper it does not identify")
+                      + "; refusing to put a second paper in one folder",
+            "resolve": RESOLVE}
+
+
+def adopt_local(src: Path, out_override: Path | None, title_override: str) -> dict:
+    """Give a local file the same shape every other route produces: one folder per
+    paper, holding the source and (later) the lecture. The folder is created BESIDE
+    the file: the file already sits where the user put it, and hauling it off to the
+    configured library would relocate something nobody asked to have moved. Into
+    that folder the file is MOVED, not copied — two copies of a 10 MB thesis in the
+    same tree is not a library."""
+    title, author, year = pdf_title(src)
+    if title_override:
+        title = title_override
+    meta = {"title": title, "authors": [author] if author else [], "year": year,
+            "doi": "", "arxiv_id": "", "abstract": "", "venue": "",
+            "input": str(src)}
+
+    if not title:
+        return {"route": "needs-title", "meta": meta, "path": str(src),
+                "reason": "the file carries no title metadata; read its first page, "
+                          "then re-run with --title \"<the paper's title>\""}
+
+    # No filename fallback here: a title exists by this point, and falling back to
+    # the stem would name a folder "thesis-final-v3" while a real title was in hand.
+    slug = slugify(title, "")
+    if not slug:
+        return {"route": "needs-title", "meta": meta, "path": str(src),
+                "reason": f"the title {title!r} leaves no ASCII characters to name a "
+                          "folder with; re-run with --title \"<the paper's English "
+                          "title>\""}
+
+    # A second run on an already-adopted file must land on the same folder, not
+    # nest a <slug>/<slug>/ inside it.
+    if out_override is not None:
+        workdir = out_override / slug
+    elif src.parent.name == slug:
+        workdir = src.parent
+    else:
+        workdir = src.parent / slug
+    dest = workdir / src.name
+
+    conflict = folder_conflict(workdir, meta, slug)
+    if conflict:
+        return conflict | {"path": str(src)}
+
+    if dest.resolve() == src.resolve():
+        log("  already in place")
+    elif dest.exists():
+        return {"route": "conflict", "slug": slug, "workdir": str(workdir),
+                "meta": meta, "path": str(src),
+                "reason": f"{dest} already exists; refusing to overwrite it",
+                "resolve": RESOLVE}
+    else:
+        # No lecture to identify the folder by, but something is already in it.
+        # Whether that is this same paper under another filename or a different
+        # paper entirely, nothing here can tell — and both leave two sources in a
+        # folder meant for one, so say so instead of quietly adding to the pile.
+        others = sorted(p.name for p in workdir.glob("*")
+                        if p.is_file() and p.name != "lecture.md")
+        if others:
+            return {"route": "conflict", "slug": slug, "workdir": str(workdir),
+                    "meta": meta, "path": str(src), "occupant": {"files": others},
+                    "reason": f"{workdir} already holds {', '.join(others)} and no "
+                              "lecture.md saying which paper that is",
+                    "resolve": RESOLVE}
+        workdir.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(dest))
+        log(f"  moved {src.name} -> {dest}")
+
+    ext = dest.suffix.lower()
+    return {"slug": slug, "workdir": str(workdir), "meta": meta,
+            "route": "needs-pdf" if ext == ".pdf" else "local",
+            "tier": 6 if ext == ".pdf" else 1,
+            "pdf_path": str(dest) if ext == ".pdf" else "",
+            "source_path": str(dest),
+            "reason": "local file; no LaTeX source available"}
+
+
 # --- output ---------------------------------------------------------------
 
 
 def slugify(title: str, fallback: str) -> str:
-    if not title:
-        return fallback
+    """ASCII, lowercase, hyphen-separated. The folder name gets pasted into shell
+    commands (pdftotext, markitdown) and into Markdown links, where a space has to
+    be quoted in one and percent-escaped in the other. NFKD plus an ASCII round
+    trip folds accents onto their base letters (Scholkopf, not Sch_lkopf) and drops
+    what has no ASCII form at all, so a title in another script yields "" and the
+    caller asks for an English one rather than inventing a name."""
     t = unicodedata.normalize("NFKD", title)
-    t = re.sub(r"[^\w\s-]", "", t, flags=re.U).strip().lower()
+    t = t.encode("ascii", "ignore").decode()
+    t = re.sub(r"[^\w\s-]", "", t).strip().lower()
     t = re.sub(r"[\s_]+", "-", t)
-    return t[:60].strip("-") or fallback
+    if len(t) > 60:  # cut back to a word boundary rather than leaving "...netwo"
+        t = t[:60].rpartition("-")[0] or t[:60]
+    return t.strip("-") or fallback
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Resolve a paper to its best available full text.")
-    ap.add_argument("source", help="arXiv ID/URL, DOI, publisher URL, or a title to search")
-    ap.add_argument("--out", default=".ppread", help="working directory (default: .ppread)")
+    ap.add_argument("source", nargs="?",
+                    help="arXiv ID/URL, DOI, publisher URL, or a title to search")
+    ap.add_argument("--out", default=None,
+                    help="one-off override of the output directory: the configured "
+                         "library on a network route, or the input file's own "
+                         "directory on a local one")
+    ap.add_argument("--set-output", metavar="MODE:VALUE",
+                    help="remember where lectures go: 'fixed:/abs/path' for one "
+                         "location always, or 'cwd:papers' for <current dir>/papers")
+    ap.add_argument("--title", default=None,
+                    help="English title overriding the one found; decides the folder "
+                         "name. Needed for a local file whose metadata has no title "
+                         "or no ASCII in it, and to separate two papers whose titles "
+                         "land on the same folder")
+    ap.add_argument("--show-config", action="store_true",
+                    help="print the remembered output location and exit")
     ap.add_argument("--keep-comments", action="store_true",
                     help="keep whole-line LaTeX comments (stripped by default)")
     args = ap.parse_args()
 
+    if args.show_config:
+        cfg = load_config()
+        out, _ = resolve_out(None)
+        print(json.dumps({"config_path": str(CONFIG_PATH), "config": cfg,
+                          "resolves_to": str(out) if out else None},
+                         ensure_ascii=False, indent=2))
+        return 0
+
+    if args.set_output:
+        mode, _, val = args.set_output.partition(":")
+        if mode == "fixed":
+            if not val:
+                log("fixed: needs a path"); return 2
+            cfg = {"mode": "fixed", "path": str(Path(val).expanduser().resolve())}
+        elif mode == "cwd":
+            cfg = {"mode": "cwd", "dir": val or "papers"}
+        else:
+            log(f"unknown mode {mode!r}: use 'fixed:/abs/path' or 'cwd:papers'")
+            return 2
+        save_config(cfg)
+        out, _ = resolve_out(None)
+        print(json.dumps({"saved": str(CONFIG_PATH), "config": cfg,
+                          "resolves_to": str(out)}, ensure_ascii=False, indent=2))
+        return 0
+
+    if not args.source:
+        log("a source is required (arXiv ID, DOI, URL, or title)")
+        return 2
+
     kind, value = identify(args.source)
     log(f"identified as {kind}: {value}")
+
+    # A local file carries its own destination — the folder goes next to it — so
+    # this route never has to ask the library question below.
+    if kind == "file":
+        override = Path(args.out).expanduser() if args.out else None
+        result = adopt_local(Path(value), override, args.title or "")
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
+    # Gate before any network call or mkdir: never download into a directory the
+    # user has not agreed to.
+    out_root, _cfg = resolve_out(args.out)
+    if out_root is None:
+        print(json.dumps({
+            "route": "needs-output-config",
+            "cwd": str(Path.cwd()),
+            "suggested_cwd_mode": str(Path.cwd() / "papers"),
+            "config_path": str(CONFIG_PATH),
+            "reason": "no output location has been chosen yet; ask the user, then "
+                      "re-run with --set-output 'fixed:/abs/path' or 'cwd:papers'",
+        }, ensure_ascii=False, indent=2))
+        return 0
 
     meta: dict = {"title": "", "authors": [], "year": "", "doi": "", "arxiv_id": "",
                   "abstract": "", "venue": "", "input": args.source}
@@ -411,13 +703,24 @@ def main() -> int:
             if v and not meta.get(k):
                 meta[k] = v
 
-    slug = slugify(meta["title"], meta["arxiv_id"] or "paper")
-    workdir = Path(args.out) / slug
-    workdir.mkdir(parents=True, exist_ok=True)
+    slug = slugify(args.title or meta["title"], meta["arxiv_id"] or "paper")
+    # One folder per paper: the source and the lecture the agent writes live
+    # side by side. The folder is created only if there is something to put in
+    # it — a failed lookup should not litter the tree with empty directories.
+    workdir = out_root / slug
+
+    # Before the download, not after: a folder that turns out to belong to another
+    # paper makes the whole fetch pointless, and finding that out first costs one
+    # stat instead of a 10 MB e-print.
+    conflict = folder_conflict(workdir, meta, slug)
+    if conflict:
+        print(json.dumps(conflict, ensure_ascii=False, indent=2))
+        return 0
 
     result = {"slug": slug, "workdir": str(workdir), "meta": meta}
 
     if meta["arxiv_id"]:
+        workdir.mkdir(parents=True, exist_ok=True)
         kind2, path = fetch_eprint(meta["arxiv_id"], workdir)
         if kind2 == "latex" and path is not None:
             text = assemble(path, strip_comments=not args.keep_comments)
@@ -461,8 +764,8 @@ def main() -> int:
                              "source (lookup services unreachable or no match); "
                              "ask the user for an arXiv ID, a DOI, or a direct URL"}
 
-    (workdir / "meta.json").write_text(
-        json.dumps(result, ensure_ascii=False, indent=2), "utf-8")
+    # No meta.json: the metadata belongs in the lecture's front matter, where a
+    # reader actually sees it. Writing it twice means two files to keep in sync.
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 

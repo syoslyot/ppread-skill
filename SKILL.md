@@ -1,6 +1,6 @@
 ---
 name: ppread
-description: "Paragraph-by-paragraph bilingual close reading of a research paper — invoke with /ppread <arXiv ID | DOI | URL | PDF path>. Fetches the highest-fidelity full text available (arXiv LaTeX source first, falling back through HTML to PDF), then writes a Traditional Chinese lecture to reading/<title>.md: for each passage, the English original, a translation, and an explanation covering background, prior work, experimental rationale and formula breakdown. Stops at the lecture and never writes the user's own notes."
+description: "Paragraph-by-paragraph bilingual close reading of a research paper — invoke with /ppread <arXiv ID | DOI | URL | PDF path>. Fetches the highest-fidelity full text available (arXiv LaTeX source first, falling back through HTML to PDF), then writes a Traditional Chinese lecture to <slug>/lecture.md beside the source — for a local PDF that folder is created next to the file itself, named after the paper's English title: for each passage, the English original, a translation, and an explanation covering background, prior work, experimental rationale and formula breakdown. Stops at the lecture and never writes the user's own notes."
 ---
 
 # /ppread — Paper Close Reading
@@ -15,11 +15,16 @@ or URL, a DOI, a publisher URL, a paper title, or a local PDF path.
 ## Step 0: Fetch
 
 ```bash
-python3 ~/.claude/skills/ppread/fetch.py "<source>" --out .ppread
+python3 ~/.claude/skills/ppread/fetch.py "<source>"
 ```
 
-For a local PDF path, skip the script entirely and go straight to the PDF route
-in Step 1.
+A local file goes through the same script — do not skip it. `fetch.py` reads the
+file's own metadata for a title, creates `<slug>/` **in the directory the file is
+already in**, and **moves** the file in, so a paper that arrived by hand ends up
+shaped exactly like one that was fetched: source and lecture in one folder. A
+local file is never relocated into the configured library — it already sits where
+the user put it — and for the same reason it never triggers the output-location
+question below.
 
 The script prints one JSON object. Read `route` and act:
 
@@ -27,10 +32,73 @@ The script prints one JSON object. Read `route` and act:
 |---|---|---|
 | `latex` | arXiv source obtained (tier 1) | Read `source_path`. This is the good case. |
 | `needs-html` | No LaTeX; an HTML full text may exist | Fetch `html_url` (or `page_url`) with Firecrawl `firecrawl_scrape`. |
-| `needs-pdf` | Only a PDF exists | Convert with MarkItDown MCP `convert_to_markdown`. |
+| `needs-pdf` | Only a PDF exists | Convert to text — see "The PDF route" below. |
 | `unresolved` | Nothing identified the reference | Stop. Tell the user what was tried and ask for an arXiv ID, a DOI, or a direct URL. Do not guess at which paper was meant. |
+| `needs-output-config` | No output location has ever been chosen | Ask (see below), save the answer, re-run Step 0. |
+| `conflict` | The folder this paper wants already belongs to another paper | Stop and ask the user — see "When two papers want one folder". Nothing was downloaded or moved. |
+| `needs-title` | A local file whose metadata has no title, or a title with no ASCII in it | Read its first page (`pdftotext -f 1 -l 1 <file> -`), take the **English** title — a paper written in another language usually prints one on page 1; translate it if it does not — and re-run with `--title "<title>"`. The file was **not** moved. |
+| `local` | A local non-PDF source (e.g. `.tex`) already in place | Read `source_path` directly. |
 
-`meta.json` in the workdir holds title, authors, year, DOI, arXiv ID and abstract.
+### The PDF route: getting readable text out
+
+Detect what this machine has and use the first that works. Do not ask the user to
+install anything until every option has been tried.
+
+1. **MarkItDown MCP** — `convert_to_markdown`. Best structure (headings, tables,
+   lists survive). Available only when the session has that MCP server.
+2. **`markitdown` CLI** — same engine, no MCP needed:
+   ```bash
+   command -v markitdown && markitdown "<file.pdf>"
+   ```
+3. **`pdftotext -layout`** — Poppler, present on most Linux installs. `-layout`
+   preserves column geometry, which decides whether a two-column paper comes out
+   readable or interleaved:
+   ```bash
+   command -v pdftotext && pdftotext -layout "<file.pdf>" -
+   ```
+4. **Nothing available** — stop and say so, with the install line:
+   `pip install 'markitdown[pdf]'`, or the distribution's `poppler-utils`.
+
+**None of these recover formulas, and saying otherwise would be misleading.** A
+PDF stores glyph positions, not structure; whether a `2` was a superscript, a
+subscript or a literal digit is information that stopped existing before any tool
+opened the file. MarkItDown makes tier 6 more *readable*, never more *correct*.
+The Discipline rules below apply in full on this route — mark damaged formulas,
+never infer them. The real fix is always to climb back to tier 1.
+
+### First run: ask where lectures go
+
+`needs-output-config` means this machine has never been told where papers
+belong. **Nothing was downloaded and no directory was created** — the check runs
+before any network call precisely so the question comes first. Only network routes
+reach it; a local file answers the question by its own location.
+
+Ask the user, offering the two shapes an answer can take (the JSON carries `cwd`
+and `suggested_cwd_mode` to fill in concrete paths):
+
+- **One fixed library, always** — every paper lands in the same place no matter
+  where the agent was started. Save with:
+  ```bash
+  python3 ~/.claude/skills/ppread/fetch.py --set-output "fixed:/absolute/path"
+  ```
+- **`papers/` under whatever directory I am in** — a separate library per
+  project. Save with:
+  ```bash
+  python3 ~/.claude/skills/ppread/fetch.py --set-output "cwd:papers"
+  ```
+
+Then re-run Step 0. The answer lives in `~/.config/ppread/config.json` and is
+never asked again. `--show-config` prints what is remembered and where it
+currently resolves to; re-running `--set-output` changes it; `--out <dir>`
+overrides it for one run without changing it.
+
+**Never choose on the user's behalf.** Defaulting to `./papers` would mean
+creating a directory tree inside whatever repo or home directory the session
+happened to start in. That is the one mistake this gate exists to prevent.
+
+The JSON also carries `meta` (title, authors, year, DOI, arXiv ID, venue,
+abstract) and `slug`. Nothing is written to disk except the source itself —
+carry the metadata straight into the lecture's front matter.
 
 **Report the tier to the user before starting**, in one line — tier 1 means
 formulas and citations are exact; tier 5–6 means they were reconstructed from a
@@ -61,10 +129,60 @@ Write **one section per pass**, appending to the file. Never try to emit the
 whole paper in a single response — long papers overflow and quality collapses
 near the end. After each section, state what was completed and continue.
 
-Output path: `reading/<paper title>.md`, relative to the current directory.
-Create `reading/` if absent. Use the paper's real title as the filename so
-Obsidian `[[wikilinks]]` resolve naturally; strip characters illegal in
-filenames (`/ \ : * ? " < > |`).
+Output path: **`<workdir>/lecture.md`**, where `workdir` is the field of that name
+in the fetch result — the same folder `fetch.py` put the source in, so everything
+about one paper lives together:
+
+```
+<library>/attention-is-all-you-need/     # network route: the configured library
+~/Downloads/attention-is-all-you-need/   # local route: beside the file itself
+    source.tex     # only on the latex route; absent otherwise
+    src/           # unpacked e-print tree — figures live here
+    1706.03762.pdf # only on the local route: the file, moved in
+    lecture.md     # what you write
+```
+
+The folder is named `<slug>` — the `slug` field from the fetch result — which is
+always ASCII, lowercase and hyphenated, derived from the paper's English title.
+Spaces are not used: the path gets pasted into shell commands (`pdftotext`,
+`markitdown`) where a space needs quoting, and into Markdown links where it needs
+percent-escaping. Do not rename the folder.
+
+On a network route with no LaTeX, `fetch.py` creates nothing — make the folder
+yourself at `workdir` and write only `lecture.md`. On a local-file route the
+folder already exists and holds the moved file; write `lecture.md` beside it.
+
+The file is **moved, not copied**. Two copies of an 80-page thesis in one tree is
+not a library.
+
+### When two papers want one folder
+
+The folder name comes from the title, so two papers can ask for the same one —
+two papers actually named `A Survey of Federated Learning`, a workshop paper
+later reprinted under its own title, or two long titles that agree for the first
+60 characters. `fetch.py` returns `route: conflict` and writes nothing: no
+download, no `mkdir`, and a local file stays exactly where it was.
+
+It decides by reading the front matter of the `lecture.md` already in that folder
+— the arXiv ID settles it, then the DOI, and only failing both does it compare
+titles. A folder holding a source file but no `lecture.md` cannot be identified at
+all, so that is reported too rather than guessed at.
+
+**Do not resolve this alone, and never work around it by renaming the folder.**
+The name is derived from the title; a hand-renamed folder is one the next run
+will not find, and it will fetch the paper a second time. Show the user both
+papers — `occupant` in the JSON is the resident one, `meta` the incoming one —
+and ask which case it is:
+
+- **The same paper** (a re-download, a newer version) — the user deletes or
+  renames the old folder, then Step 0 runs again.
+- **Genuinely different papers** — re-run with `--title "<a title that tells the
+  two apart>"`, which changes the folder name for this run only. `--out <dir>`
+  works too, but it puts the paper outside the library.
+
+**There is no separate metadata file.** Title, authors, year, DOI, arXiv ID,
+venue and fidelity tier all go in the lecture's YAML front matter, where a reader
+sees them. Two files holding the same facts is two files to keep in sync.
 
 ## Step 3: Stop
 
