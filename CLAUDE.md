@@ -54,4 +54,6 @@ No test framework. `fetch.py` is exercised from the shell against real sources; 
 
 ## Git
 
-Default branch is `main`. Develop on `feature/*` or `fix/*` branches; do not commit directly to `main`.
+Git Flow, two trunks. `main` is the release line; `develop` is the integration branch and the base for all topic work. Branch `feature/*` or `fix/*` off `develop`, never off `main`, and never commit directly to either trunk. A release goes `develop` → `release/*` → `main`, is tagged there, then back-merges to `develop`; `/gitf` drives the whole cycle.
+
+Everything up to `v0.1.0` landed on `main` directly — `develop` did not exist yet. That is history, not precedent.
