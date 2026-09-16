@@ -43,12 +43,12 @@ def log(msg: str) -> None:
 
 
 def get(url: str, accept: str | None = None, retries: int = 3,
-        timeout: int = TIMEOUT) -> bytes:
+        timeout: int = TIMEOUT, headers: dict | None = None) -> bytes:
     """Keyless Semantic Scholar rate-limits hard and arXiv's search endpoint is slow
     enough to time out, so both classes of failure are retried with backoff."""
     delay = 3.0
     for attempt in range(retries):
-        req = urllib.request.Request(url, headers={"User-Agent": UA})
+        req = urllib.request.Request(url, headers={"User-Agent": UA, **(headers or {})})
         if accept:
             req.add_header("Accept", accept)
         try:
@@ -193,6 +193,32 @@ def arxiv_search(title: str) -> str:
     return m.group(1) if m else ""
 
 
+S2 = "https://api.semanticscholar.org/graph/v1"
+# Optional: a key gets its own quota instead of the shared keyless pool, which
+# answered 429 by the third quick request in testing. Everything works without it.
+_S2_KEY = os.environ.get("PPREAD_S2_API_KEY", "").strip()
+_s2_last = 0.0
+
+
+def s2_get(path: str) -> dict:
+    """One Semantic Scholar Graph API call, spaced at least a second after the
+    previous one — cheaper than the backoff a 429 would cost."""
+    global _s2_last
+    wait = _s2_last + 1.0 - time.monotonic()
+    if wait > 0:
+        time.sleep(wait)
+    try:
+        return json.loads(get(S2 + path, headers={"x-api-key": _S2_KEY} if _S2_KEY else None))
+    finally:
+        _s2_last = time.monotonic()
+
+
+def s2_ids(rec: dict) -> dict:
+    ext = rec.get("externalIds") or {}
+    return {"title": rec.get("title") or "", "year": rec.get("year"),
+            "arxiv": ext.get("ArXiv") or "", "doi": ext.get("DOI") or ""}
+
+
 def s2_lookup(kind: str, value: str) -> dict | None:
     """Ask Semantic Scholar for cross-IDs. This is what finds an arXiv twin of a
     paywalled paper, which is the single highest-value step in the whole ladder."""
@@ -204,14 +230,12 @@ def s2_lookup(kind: str, value: str) -> dict | None:
 
     fields = "title,abstract,year,authors,externalIds,openAccessPdf,venue"
     if ident.startswith("search:"):
-        url = ("https://api.semanticscholar.org/graph/v1/paper/search"
-               f"?query={urllib.parse.quote(value)}&limit=1&fields={fields}")
+        path = f"/paper/search?query={urllib.parse.quote(value)}&limit=1&fields={fields}"
     else:
-        url = ("https://api.semanticscholar.org/graph/v1/paper/"
-               f"{urllib.parse.quote(ident, safe=':/')}?fields={fields}")
+        path = f"/paper/{urllib.parse.quote(ident, safe=':/')}?fields={fields}"
 
     try:
-        data = json.loads(get(url))
+        data = s2_get(path)
     except urllib.error.HTTPError as e:
         log(f"  semantic scholar: HTTP {e.code}")
         return None
@@ -252,6 +276,50 @@ def arxiv_meta(arxiv_id: str) -> dict:
             if a.text
         ],
     }
+
+
+# --- literature grounding -------------------------------------------------
+#
+# A broad lecture names papers outside the one being read. A list of such papers
+# produced from memory gets an author, a year or a title wrong, or names a paper
+# that does not exist, and reads exactly as convincingly as a correct one. So every
+# outside paper must come from the citation graph or pass an exact title match.
+
+VERIFY_MAX = 25
+
+
+def title_match(query: str) -> dict | None:
+    """Semantic Scholar's best title match, or None when it has none. Other
+    failures raise, so callers can tell 'no such paper' from 'could not ask'."""
+    path = f"/paper/search/match?query={urllib.parse.quote(query)}&fields=title,year,externalIds"
+    try:
+        data = s2_get(path)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+    hits = data.get("data") or []
+    return hits[0] if hits else None
+
+
+def match_status(query: str, rec: dict | None) -> dict:
+    """search/match always returns its best candidate, however poor, so a high
+    score proves nothing; only an exact normalised title does. A near miss is
+    reported with its candidate but never counts as verified."""
+    if not rec:
+        return {"query": query, "status": "not-found"}
+    if _norm_title(rec.get("title", "")) == _norm_title(query):
+        return {"query": query, "status": "exact", **s2_ids(rec)}
+    return {"query": query, "status": "mismatch", "candidate": rec.get("title") or ""}
+
+
+def verify_title(query: str) -> dict:
+    try:
+        return match_status(query, title_match(query))
+    except urllib.error.HTTPError as e:
+        return {"query": query, "status": "error", "reason": f"HTTP {e.code}"}
+    except Exception as e:
+        return {"query": query, "status": "error", "reason": str(e)}
 
 
 # --- arXiv e-print --------------------------------------------------------
@@ -628,7 +696,19 @@ def main() -> int:
                     help="print the remembered output location and exit")
     ap.add_argument("--keep-comments", action="store_true",
                     help="keep whole-line LaTeX comments (stripped by default)")
+    ap.add_argument("--verify", nargs="+", metavar="TITLE",
+                    help=f"check up to {VERIFY_MAX} paper titles against Semantic "
+                         "Scholar; only an exact normalised title match counts")
     args = ap.parse_args()
+
+    if args.verify:
+        if len(args.verify) > VERIFY_MAX:
+            log(f"--verify takes at most {VERIFY_MAX} titles per call")
+            return 2
+        print(json.dumps({"route": "verify",
+                          "results": [verify_title(t) for t in args.verify]},
+                         ensure_ascii=False, indent=2))
+        return 0
 
     if args.show_config:
         cfg = load_config()

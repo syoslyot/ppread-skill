@@ -60,8 +60,44 @@ def check_lecture_docs_and_conflicts() -> None:
     assert fetch.front_matter(f / "lecture.md") == {"title": "Paper A", "arxiv": "1111.11111"}
 
 
+def check_verify_matching() -> None:
+    rec = {"paperId": "p", "title": "Neural Machine Translation by Jointly Learning to Align and Translate",
+           "year": 2014, "externalIds": {"ArXiv": "1409.0473"}}
+    r = fetch.match_status("neural machine translation by jointly learning to align and translate", rec)
+    assert r == {"query": "neural machine translation by jointly learning to align and translate",
+                 "status": "exact", "title": rec["title"], "year": 2014,
+                 "arxiv": "1409.0473", "doi": ""}, r
+    r = fetch.match_status("Attention Mechanisms Are All You Need for Vision", rec)
+    assert r["status"] == "mismatch" and r["candidate"] == rec["title"], r
+    assert fetch.match_status("x", None) == {"query": "x", "status": "not-found"}
+
+
+def check_s2_key_header() -> None:
+    seen = {}
+    orig_get, orig_key = fetch.get, fetch._S2_KEY
+
+    def fake_get(url, **kw):
+        seen.clear()
+        seen.update(url=url, **kw)
+        return b"{}"
+
+    fetch.get = fake_get
+    try:
+        fetch._S2_KEY = "k"
+        fetch.s2_get("/paper/x")
+        assert seen["url"] == "https://api.semanticscholar.org/graph/v1/paper/x", seen
+        assert seen["headers"] == {"x-api-key": "k"}, seen
+        fetch._S2_KEY = ""
+        fetch.s2_get("/paper/x")
+        assert seen["headers"] is None, seen
+    finally:
+        fetch.get, fetch._S2_KEY = orig_get, orig_key
+
+
 CHECKS = [
     check_lecture_docs_and_conflicts,
+    check_verify_matching,
+    check_s2_key_header,
 ]
 
 if __name__ == "__main__":
