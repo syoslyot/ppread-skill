@@ -145,11 +145,44 @@ def check_graph() -> None:
     assert fetch.graph(__file__)["route"] == "graph-unavailable"
 
 
+def check_list_library() -> None:
+    lib = Path(tempfile.mkdtemp())
+    write_doc(lib / "a-read" / "broad.md",
+              {**A, "year": "2017", "tier": "1", "mode": "broad", "lecture_read": "true"})
+    write_doc(lib / "a-read" / "deep.md",
+              {**A, "year": "2017", "tier": "1", "mode": "deep", "lecture_read": "false"})
+    write_doc(lib / "b-legacy" / "lecture.md", {"title": "Legacy", "year": "2016", "tier": "6"})
+    (lib / "c-source-only").mkdir()
+    (lib / "c-source-only" / "paper.pdf").write_bytes(b"%PDF")
+    write_doc(lib / "d-partial" / "broad.part.md", {"title": "Partial", "mode": "broad"})
+    (lib / "assets" / "a-read").mkdir(parents=True)
+    (lib / ".obsidian").mkdir()
+    (lib / ".obsidian" / "app.json").write_text("{}", "utf-8")
+    (lib / "papers.base").write_text("", "utf-8")
+
+    r = fetch.list_library(lib)
+    assert r["route"] == "list" and r["library"] == str(lib)
+    assert r["papers"] == [
+        {"slug": "a-read", "title": "Paper A", "year": "2017", "tier": "1",
+         "broad": "read", "deep": "unread", "legacy": False},
+        {"slug": "b-legacy", "title": "Legacy", "year": "2016", "tier": "6",
+         "broad": "absent", "deep": "absent", "legacy": True},
+        {"slug": "c-source-only", "title": "", "year": "", "tier": "",
+         "broad": "absent", "deep": "absent", "legacy": False},
+        {"slug": "d-partial", "title": "Partial", "year": "", "tier": "",
+         "broad": "partial", "deep": "absent", "legacy": False},
+    ], r["papers"]
+
+    assert fetch.list_library(lib / "nope") == {"route": "list", "library": str(lib / "nope"),
+                                                 "papers": []}
+
+
 CHECKS = [
     check_lecture_docs_and_conflicts,
     check_verify_matching,
     check_s2_key_header,
     check_graph,
+    check_list_library,
 ]
 
 if __name__ == "__main__":

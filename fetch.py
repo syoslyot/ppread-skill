@@ -107,6 +107,17 @@ def resolve_out(cli_out: str | None) -> tuple[Path | None, dict]:
     return None, cfg
 
 
+def needs_output_config() -> dict:
+    return {
+        "route": "needs-output-config",
+        "cwd": str(Path.cwd()),
+        "suggested_cwd_mode": str(Path.cwd() / "papers"),
+        "config_path": str(CONFIG_PATH),
+        "reason": "no output location has been chosen yet; ask the user, then "
+                  "re-run with --set-output 'fixed:/abs/path' or 'cwd:papers'",
+    }
+
+
 # --- source identification ------------------------------------------------
 
 
@@ -727,6 +738,26 @@ def adopt_local(src: Path, out_override: Path | None, title_override: str) -> di
             "reason": "local file; no LaTeX source available"}
 
 
+def list_library(root: Path) -> dict:
+    """Every paper folder under root with the state of its lectures. A paper folder
+    is a non-hidden directory holding at least one file directly: that admits a
+    folder with only a source in it and skips containers such as assets/, whose
+    contents are all subdirectories."""
+    papers = []
+    dirs = sorted(p for p in root.iterdir()
+                  if p.is_dir() and not p.name.startswith(".")) if root.is_dir() else []
+    for d in dirs:
+        if not any(p.is_file() for p in d.iterdir()):
+            continue
+        fields = next((fm for fm in (front_matter(d / n) for n in DOC_FILES) if fm), {})
+        docs = lecture_docs(d)
+        papers.append({"slug": d.name, "title": fields.get("title", ""),
+                       "year": fields.get("year", ""), "tier": fields.get("tier", ""),
+                       "broad": docs["broad"], "deep": docs["deep"],
+                       "legacy": docs["legacy"]})
+    return {"route": "list", "library": str(root), "papers": papers}
+
+
 # --- output ---------------------------------------------------------------
 
 
@@ -772,6 +803,9 @@ def main() -> int:
     ap.add_argument("--graph", metavar="ID_OR_TITLE",
                     help="references and citations of a paper from Semantic Scholar, "
                          "ranked by influence then citation count")
+    ap.add_argument("--list", nargs="?", const="", metavar="DIR",
+                    help="list paper folders and the state of their lectures; "
+                         "defaults to the configured library")
     args = ap.parse_args()
 
     if args.verify:
@@ -785,6 +819,12 @@ def main() -> int:
 
     if args.graph:
         print(json.dumps(graph(args.graph), ensure_ascii=False, indent=2))
+        return 0
+
+    if args.list is not None:
+        root = Path(args.list).expanduser() if args.list else resolve_out(None)[0]
+        out = needs_output_config() if root is None else list_library(root)
+        print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0
 
     if args.show_config:
@@ -831,14 +871,7 @@ def main() -> int:
     # user has not agreed to.
     out_root, _cfg = resolve_out(args.out)
     if out_root is None:
-        print(json.dumps({
-            "route": "needs-output-config",
-            "cwd": str(Path.cwd()),
-            "suggested_cwd_mode": str(Path.cwd() / "papers"),
-            "config_path": str(CONFIG_PATH),
-            "reason": "no output location has been chosen yet; ask the user, then "
-                      "re-run with --set-output 'fixed:/abs/path' or 'cwd:papers'",
-        }, ensure_ascii=False, indent=2))
+        print(json.dumps(needs_output_config(), ensure_ascii=False, indent=2))
         return 0
 
     meta: dict = {"title": "", "authors": [], "year": "", "doi": "", "arxiv_id": "",
