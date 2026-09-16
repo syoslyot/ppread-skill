@@ -29,7 +29,7 @@ from pathlib import Path
 # pool; the address is for accountability, never verified, and entirely optional.
 # arXiv only requires that the agent be identifiable at all.
 _CONTACT = os.environ.get("PPREAD_CONTACT", "").strip()
-UA = ("ppread/0.1 (+https://github.com/syoslyot/ppread-skill" +
+UA = ("ppread/0.2 (+https://github.com/syoslyot/ppread-skill" +
       (f"; mailto:{_CONTACT})" if _CONTACT else ")"))
 TIMEOUT = 45
 
