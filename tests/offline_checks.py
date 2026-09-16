@@ -94,10 +94,62 @@ def check_s2_key_header() -> None:
         fetch.get, fetch._S2_KEY = orig_get, orig_key
 
 
+def _edge(side: str, title: str, cites: int, influential: bool) -> dict:
+    return {side: {"title": title, "year": 2020, "externalIds": {}, "citationCount": cites},
+            "isInfluential": influential, "intents": ["methodology"] if influential else []}
+
+
+def _run_graph(citation_pages: dict, total: int, fail_at: int | None = None) -> dict:
+    def fake(path: str) -> dict:
+        if "/references" in path:
+            return {"data": [_edge("citedPaper", "r-low", 1, False),
+                             _edge("citedPaper", "r-infl", 0, True),
+                             _edge("citedPaper", "r-high", 50, False)]}
+        if "/citations" in path:
+            off = int(re.search(r"offset=(\d+)", path).group(1))
+            if off == fail_at:
+                raise OSError("boom")
+            data, more = citation_pages[off]
+            return {"data": data, **({"next": off + len(data)} if more else {})}
+        return {"title": "P", "year": 2020, "externalIds": {"ArXiv": "2001.00001"},
+                "citationCount": total}
+
+    orig = fetch.s2_get
+    fetch.s2_get = fake
+    try:
+        return fetch.graph("2001.00001")
+    finally:
+        fetch.s2_get = orig
+
+
+def check_graph() -> None:
+    full = [_edge("citingPaper", f"c{i}", i, i == 5) for i in range(1000)]
+    g = _run_graph({0: (full, True), 1000: ([_edge("citingPaper", "late", 99999, False)], False)},
+                   total=1001)
+    assert g["route"] == "graph" and g["paper"]["arxiv"] == "2001.00001", g
+    assert [r["title"] for r in g["references"]] == ["r-infl", "r-high", "r-low"]
+    assert g["references"][0]["intents"] == ["methodology"]
+    assert [c["title"] for c in g["citations"][:2]] == ["c5", "late"]
+    assert len(g["citations"]) == 50
+    assert g["citations_scanned"] == 1001 and g["citations_complete"] is True
+    assert g["citation_count"] == 1001 and "citations_error" not in g
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", g["fetched_on"])
+
+    g = _run_graph({0: (full, True), 1000: (full, True), 2000: (full, True)}, total=170000)
+    assert g["citations_scanned"] == 3000 and g["citations_complete"] is False
+
+    g = _run_graph({0: (full, True)}, total=5000, fail_at=1000)
+    assert g["citations_scanned"] == 1000 and g["citations_complete"] is False
+    assert g["citations_error"] == "boom"
+
+    assert fetch.graph(__file__)["route"] == "graph-unavailable"
+
+
 CHECKS = [
     check_lecture_docs_and_conflicts,
     check_verify_matching,
     check_s2_key_header,
+    check_graph,
 ]
 
 if __name__ == "__main__":

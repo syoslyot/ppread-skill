@@ -322,6 +322,76 @@ def verify_title(query: str) -> dict:
         return {"query": query, "status": "error", "reason": str(e)}
 
 
+GRAPH_FIELDS = "title,year,externalIds,citationCount,isInfluential,intents"
+GRAPH_PAGE = 1000
+# Citations come newest-first and the API cannot sort them by impact; offset+limit
+# is capped below 10000. Past three pages a keyless run spends minutes in backoff
+# only to collect more recent, rarely-cited papers, so three is where it stops.
+GRAPH_PAGES = 3
+GRAPH_TOP_CITATIONS = 50
+
+
+def graph_node(edge: dict, side: str) -> dict:
+    p = edge.get(side) or {}
+    return {**s2_ids(p), "citations": p.get("citationCount") or 0,
+            "influential": bool(edge.get("isInfluential")),
+            "intents": edge.get("intents") or []}
+
+
+def rank(nodes: list[dict]) -> list[dict]:
+    return sorted(nodes, key=lambda n: (not n["influential"], -n["citations"]))
+
+
+def graph(source: str) -> dict:
+    """The paper's neighbourhood in the citation graph, ranked locally.
+    citations_complete is true only when the citation list was read to its end."""
+    kind, value = identify(source)
+    if kind == "file":
+        return {"route": "graph-unavailable",
+                "reason": "pass the paper's arXiv ID, DOI or title, not a file path"}
+    try:
+        if kind == "query":
+            rec = title_match(value)
+            if not rec or _norm_title(rec.get("title", "")) != _norm_title(value):
+                return {"route": "graph-unavailable", "reason": "not found"}
+            pid = rec["paperId"]
+        else:
+            prefix = {"arxiv": "ARXIV:", "doi": "DOI:", "url": "URL:"}[kind]
+            pid = urllib.parse.quote(prefix + value, safe=":/")
+        paper = s2_get(f"/paper/{pid}?fields=title,year,externalIds,citationCount,referenceCount")
+        refs = s2_get(f"/paper/{pid}/references?limit={GRAPH_PAGE}&fields={GRAPH_FIELDS}")
+    except urllib.error.HTTPError as e:
+        return {"route": "graph-unavailable",
+                "reason": "not found" if e.code == 404 else f"HTTP {e.code}"}
+    except Exception as e:
+        return {"route": "graph-unavailable", "reason": str(e)}
+
+    cites: list[dict] = []
+    error, exhausted = "", False
+    for page in range(GRAPH_PAGES):
+        try:
+            data = s2_get(f"/paper/{pid}/citations?limit={GRAPH_PAGE}"
+                          f"&offset={page * GRAPH_PAGE}&fields={GRAPH_FIELDS}")
+        except Exception as e:
+            error = str(e)
+            break
+        cites += [graph_node(x, "citingPaper") for x in data.get("data") or []]
+        if data.get("next") is None:
+            exhausted = True
+            break
+
+    result = {"route": "graph", "paper": s2_ids(paper),
+              "references": rank([graph_node(x, "citedPaper") for x in refs.get("data") or []]),
+              "citations": rank(cites)[:GRAPH_TOP_CITATIONS],
+              "citation_count": paper.get("citationCount") or 0,
+              "citations_scanned": len(cites),
+              "citations_complete": exhausted and not error,
+              "fetched_on": time.strftime("%Y-%m-%d")}
+    if error:
+        result["citations_error"] = error
+    return result
+
+
 # --- arXiv e-print --------------------------------------------------------
 
 
@@ -699,6 +769,9 @@ def main() -> int:
     ap.add_argument("--verify", nargs="+", metavar="TITLE",
                     help=f"check up to {VERIFY_MAX} paper titles against Semantic "
                          "Scholar; only an exact normalised title match counts")
+    ap.add_argument("--graph", metavar="ID_OR_TITLE",
+                    help="references and citations of a paper from Semantic Scholar, "
+                         "ranked by influence then citation count")
     args = ap.parse_args()
 
     if args.verify:
@@ -708,6 +781,10 @@ def main() -> int:
         print(json.dumps({"route": "verify",
                           "results": [verify_title(t) for t in args.verify]},
                          ensure_ascii=False, indent=2))
+        return 0
+
+    if args.graph:
+        print(json.dumps(graph(args.graph), ensure_ascii=False, indent=2))
         return 0
 
     if args.show_config:
