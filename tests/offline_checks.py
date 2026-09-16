@@ -177,12 +177,27 @@ def check_list_library() -> None:
                                                  "papers": []}
 
 
+def check_papers_base() -> None:
+    lib = Path(tempfile.mkdtemp()) / "papers"
+    fetch.ensure_base(lib)
+    f = lib / "papers.base"
+    text = f.read_text("utf-8")
+    assert text == fetch.PAPERS_BASE
+    for needle in ("'type == \"reading\"'", "'generated == \"claude\"'",
+                   "'lecture_read != true'", "property: note.mode"):
+        assert needle in text, needle
+    f.write_text("custom\n", "utf-8")
+    fetch.ensure_base(lib)
+    assert f.read_text("utf-8") == "custom\n"
+
+
 CHECKS = [
     check_lecture_docs_and_conflicts,
     check_verify_matching,
     check_s2_key_header,
     check_graph,
     check_list_library,
+    check_papers_base,
 ]
 
 if __name__ == "__main__":

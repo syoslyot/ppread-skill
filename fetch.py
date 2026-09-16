@@ -760,6 +760,50 @@ def list_library(root: Path) -> dict:
 
 # --- output ---------------------------------------------------------------
 
+# Filtered by properties rather than folder, so lectures built beside local files
+# elsewhere in the vault show up too, and a reader's own `type: reading` notes do not.
+PAPERS_BASE = """\
+filters:
+  and:
+    - 'type == "reading"'
+    - 'generated == "claude"'
+views:
+  - type: table
+    name: 未讀講義
+    filters:
+      and:
+        - 'lecture_read != true'
+    order:
+      - title
+      - mode
+      - year
+      - lecture_read
+  - type: table
+    name: 全部講義
+    order:
+      - title
+      - mode
+      - year
+      - lecture_read
+    groupBy:
+      property: note.mode
+      direction: ASC
+"""
+
+
+def ensure_base(library: Path) -> None:
+    """Place an Obsidian Bases view at the library root, once. Never overwritten:
+    the reader may have customised its columns and filters since."""
+    f = library / "papers.base"
+    if f.exists():
+        return
+    try:
+        library.mkdir(parents=True, exist_ok=True)
+        f.write_text(PAPERS_BASE, "utf-8")
+        log(f"  wrote {f}")
+    except OSError as e:
+        log(f"  papers.base: {e}")
+
 
 def slugify(title: str, fallback: str) -> str:
     """ASCII, lowercase, hyphen-separated. The folder name gets pasted into shell
@@ -982,6 +1026,8 @@ def main() -> int:
 
     # No meta.json: the metadata belongs in the lecture's front matter, where a
     # reader actually sees it. Writing it twice means two files to keep in sync.
+    if result["route"] != "unresolved":
+        ensure_base(out_root)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
