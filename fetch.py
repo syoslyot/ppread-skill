@@ -417,33 +417,52 @@ def pdf_title(path: Path) -> tuple[str, str, str]:
 # One folder holds one paper. Two papers can still want the same folder: the slug
 # comes from the title, and titles collide ("A Survey of ..." twice over, a
 # workshop paper later reprinted, a 60-char truncation that erases the difference).
-# Left unchecked the damage is silent — lecture.md ends up describing a different
+# Left unchecked the damage is silent — a lecture ends up describing a different
 # paper than the source lying next to it, and nothing in either file says so.
 
 
-def lecture_identity(workdir: Path) -> dict | None:
-    """Which paper a folder already holds, read from lecture.md's YAML front
-    matter. That front matter is the only on-disk record of it — ppread writes no
-    meta.json on purpose — and its keys are fixed by lecture-format.md, so a plain
-    'key: value' scan is exact here and needs no YAML parser. None means no lecture
-    yet; an empty dict means one exists but identifies nothing."""
-    f = workdir / "lecture.md"
+DOC_FILES = ("broad.md", "deep.md", "broad.part.md", "deep.part.md", "lecture.md")
+
+
+def front_matter(f: Path) -> dict | None:
+    """The 'key: value' lines of a Markdown file's YAML front matter. The keys
+    ppread reads are fixed by lecture-format.md and never nested, so a plain scan
+    is exact and needs no YAML parser. None means no such file; an empty dict
+    means one exists but says nothing."""
     if not f.is_file():
         return None
     try:
         text = f.read_text("utf-8", errors="replace")
     except OSError as e:
-        log(f"  lecture.md: {e}")
+        log(f"  {f.name}: {e}")
         return {}
     if not text.startswith("---"):
         return {}
     body = text.partition("\n")[2].partition("\n---")[0]
-    ident = {}
+    fields = {}
     for line in body.splitlines():
         k, sep, v = line.partition(":")
-        if sep and k.strip() in ("title", "doi", "arxiv"):
-            ident[k.strip()] = v.strip().strip("\"'")
-    return ident
+        if sep:
+            fields[k.strip()] = v.strip().strip("\"'")
+    return fields
+
+
+def lecture_docs(workdir: Path) -> dict:
+    """Which lectures a folder holds and how far each has got. A lecture is written
+    as <mode>.part.md and renamed only once its last section is done, so a .part
+    file means unfinished even when a finished file of that mode also exists — a
+    regeneration in progress is not done."""
+    docs = {"legacy": (workdir / "lecture.md").is_file()}
+    for mode in ("broad", "deep"):
+        if (workdir / f"{mode}.part.md").is_file():
+            docs[mode] = "partial"
+            continue
+        fields = front_matter(workdir / f"{mode}.md")
+        if fields is None:
+            docs[mode] = "absent"
+        else:
+            docs[mode] = "read" if fields.get("lecture_read", "").lower() == "true" else "unread"
+    return docs
 
 
 def _norm_arxiv(v: str) -> str:
@@ -475,18 +494,23 @@ RESOLVE = ("if it is the same paper, delete or rename the folder that is already
 
 
 def folder_conflict(workdir: Path, meta: dict, slug: str) -> dict | None:
-    """A conflict result, or None when the folder is free or already this paper's."""
-    ident = lecture_identity(workdir)
-    if ident is None or same_paper(ident, meta):
-        return None
-    held = ident.get("title") or ident.get("arxiv") or ident.get("doi")
-    return {"route": "conflict", "slug": slug, "workdir": str(workdir), "meta": meta,
-            "occupant": {k: ident.get(k, "") for k in ("title", "doi", "arxiv")},
-            "reason": f"{workdir} already holds a lecture for "
-                      + (f"a different paper ({held})" if held
-                         else "a paper it does not identify")
-                      + "; refusing to put a second paper in one folder",
-            "resolve": RESOLVE}
+    """A conflict result, or None when every lecture in the folder is this paper's.
+    Every file is checked, not just the first: a broad.md that matches says nothing
+    about a deep.md written for another paper whose title landed on the same slug."""
+    for name in DOC_FILES:
+        ident = front_matter(workdir / name)
+        if ident is None or same_paper(ident, meta):
+            continue
+        held = ident.get("title") or ident.get("arxiv") or ident.get("doi")
+        return {"route": "conflict", "slug": slug, "workdir": str(workdir), "meta": meta,
+                "occupant": {"file": name,
+                             **{k: ident.get(k, "") for k in ("title", "doi", "arxiv")}},
+                "reason": f"{workdir / name} is a lecture for "
+                          + (f"a different paper ({held})" if held
+                             else "a paper it does not identify")
+                          + "; refusing to put a second paper in one folder",
+                "resolve": RESOLVE}
+    return None
 
 
 def adopt_local(src: Path, out_override: Path | None, title_override: str) -> dict:
@@ -544,12 +568,12 @@ def adopt_local(src: Path, out_override: Path | None, title_override: str) -> di
         # paper entirely, nothing here can tell — and both leave two sources in a
         # folder meant for one, so say so instead of quietly adding to the pile.
         others = sorted(p.name for p in workdir.glob("*")
-                        if p.is_file() and p.name != "lecture.md")
+                        if p.is_file() and p.name not in DOC_FILES)
         if others:
             return {"route": "conflict", "slug": slug, "workdir": str(workdir),
                     "meta": meta, "path": str(src), "occupant": {"files": others},
                     "reason": f"{workdir} already holds {', '.join(others)} and no "
-                              "lecture.md saying which paper that is",
+                              "lecture saying which paper that is",
                     "resolve": RESOLVE}
         workdir.mkdir(parents=True, exist_ok=True)
         shutil.move(str(src), str(dest))
@@ -557,6 +581,7 @@ def adopt_local(src: Path, out_override: Path | None, title_override: str) -> di
 
     ext = dest.suffix.lower()
     return {"slug": slug, "workdir": str(workdir), "meta": meta,
+            "docs": lecture_docs(workdir),
             "route": "needs-pdf" if ext == ".pdf" else "local",
             "tier": 6 if ext == ".pdf" else 1,
             "pdf_path": str(dest) if ext == ".pdf" else "",
@@ -717,7 +742,8 @@ def main() -> int:
         print(json.dumps(conflict, ensure_ascii=False, indent=2))
         return 0
 
-    result = {"slug": slug, "workdir": str(workdir), "meta": meta}
+    result = {"slug": slug, "workdir": str(workdir), "meta": meta,
+              "docs": lecture_docs(workdir)}
 
     if meta["arxiv_id"]:
         workdir.mkdir(parents=True, exist_ok=True)
