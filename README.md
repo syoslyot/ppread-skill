@@ -105,6 +105,7 @@ cd ppread-skill && ./deploy.sh      # → ~/.claude/skills/ppread/
 
 選用：`export PPREAD_S2_API_KEY=<key>` 讓引用網路與標題查證使用自己的 Semantic Scholar
 配額。不帶 key 時共用公開配額，連續查詢容易被限流；不設也能用，只是可能要等。
+真正省掉等待的是這把 key——沒有 key 的公開配額本來就會被節流，等待是預期行為而非異常。
 
 ## 第一次執行：決定講義放哪裡
 

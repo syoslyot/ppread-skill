@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 import tempfile
@@ -177,6 +178,31 @@ def check_list_library() -> None:
                                                  "papers": []}
 
 
+def check_list_library_unreadable_dir() -> None:
+    """A permission-denied subdirectory must be logged and skipped, not raise —
+    fetch.py has to print its one JSON object no matter what a stray directory
+    under the library looks like."""
+    lib = Path(tempfile.mkdtemp())
+    write_doc(lib / "readable" / "broad.md",
+              {**A, "year": "2017", "tier": "1", "mode": "broad", "lecture_read": "true"})
+    blocked = lib / "blocked"
+    (blocked).mkdir()
+    (blocked / "paper.pdf").write_bytes(b"%PDF")
+    blocked.chmod(0o000)
+    try:
+        if os.access(blocked, os.R_OK):
+            print("skip check_list_library_unreadable_dir "
+                  "(chmod 0o000 does not deny read in this environment)")
+            return
+        r = fetch.list_library(lib)
+        assert r["route"] == "list", r
+        slugs = [p["slug"] for p in r["papers"]]
+        assert "readable" in slugs, slugs
+        assert "blocked" not in slugs, slugs
+    finally:
+        blocked.chmod(0o755)
+
+
 def check_papers_base() -> None:
     lib = Path(tempfile.mkdtemp()) / "papers"
     fetch.ensure_base(lib)
@@ -197,6 +223,7 @@ CHECKS = [
     check_s2_key_header,
     check_graph,
     check_list_library,
+    check_list_library_unreadable_dir,
     check_papers_base,
 ]
 

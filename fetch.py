@@ -744,10 +744,19 @@ def list_library(root: Path) -> dict:
     folder with only a source in it and skips containers such as assets/, whose
     contents are all subdirectories."""
     papers = []
-    dirs = sorted(p for p in root.iterdir()
-                  if p.is_dir() and not p.name.startswith(".")) if root.is_dir() else []
+    try:
+        dirs = sorted(p for p in root.iterdir()
+                      if p.is_dir() and not p.name.startswith(".")) if root.is_dir() else []
+    except OSError as e:
+        log(f"  {root}: {e}")
+        dirs = []
     for d in dirs:
-        if not any(p.is_file() for p in d.iterdir()):
+        try:
+            has_file = any(p.is_file() for p in d.iterdir())
+        except OSError as e:
+            log(f"  {d}: {e}")
+            continue
+        if not has_file:
             continue
         fields = next((fm for fm in (front_matter(d / n) for n in DOC_FILES) if fm), {})
         docs = lecture_docs(d)

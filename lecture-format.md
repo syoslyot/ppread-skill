@@ -97,7 +97,7 @@ $d_k$ 的 query 與 key，以及維度為 $d_v$ 的 value。計算方式是把 q
 ```markdown
 ### Figure 2　Scaled Dot-Product Attention 與 Multi-Head Attention
 
-![[attention-is-all-you-need/ModalNet-19.png]]
+![[assets/attention-is-all-you-need/ModalNet-19.png]]
 
 > (left) Scaled Dot-Product Attention. (right) Multi-Head Attention consists of
 > several attention layers running in parallel.
@@ -236,6 +236,12 @@ Abstract、Introduction、Conclusion 逐段做段落單元。解說聚焦**論�
 > 本次無法查證外部文獻（Semantic Scholar 無法連線），此區從缺。
 ```
 
+同樣的情況下，「延伸閱讀」也不畫表格——每一列都需要一篇查證過的論文，查證不到就沒有列可畫，畫出空表頭只會誤導讀者以為漏填。改成同樣形狀的一行：
+
+```markdown
+> 本次無法查證外部文獻（Semantic Scholar 無法連線），此區從缺。
+```
+
 ## 延伸閱讀
 
 ```markdown
@@ -247,6 +253,7 @@ Abstract、Introduction、Conclusion 逐段做段落單元。解說聚焦**論�
 - 「建議」只有 `廣讀`／`精讀` 兩值。
 - 連結優先 arXiv（`https://arxiv.org/abs/<id>`），其次 DOI（`https://doi.org/<doi>`）。
 - 查證失敗者不列，不以警告標記代替。
+- `--graph` 與 `--verify` 都無法使用時不畫表格，見前一節「它在研究脈絡中的位置」結尾的替代寫法。
 
 ## 問題
 

@@ -59,14 +59,25 @@ The script prints one JSON object. Read `route` and act:
 
 ### Choosing the mode
 
-Every route that has a `workdir` also carries `docs`:
+Every non-conflict route that has a `workdir` also carries `docs`:
 
 ```json
 "docs": {"broad": "read", "deep": "absent", "legacy": false}
 ```
 
 `broad`/`deep` are each `absent`, `partial` (being written, or interrupted),
-`unread` or `read`. Decide:
+`unread` or `read`. A mode is **finished** when its state is `unread` or `read`;
+`absent` and `partial` are not finished. The table below is illustrative only —
+it does not cover every reachable combination (in particular it has no row for
+`partial`). The rule that actually decides, and that covers all sixteen
+combinations, is:
+
+1. **No flag**: the mode to act on is the first of broad, then deep, that is not
+   finished. If both are finished, stop and report both paths.
+2. **`--broad` or `--deep`**: the named mode is the mode to act on.
+3. Whatever mode was selected by 1 or 2: `absent` → write it; `partial` → ask
+   the user whether to resume or restart (see the bullet below); finished →
+   report the file's path and stop.
 
 | `docs` | no flag | `--broad` | `--deep` |
 |---|---|---|---|
@@ -74,7 +85,6 @@ Every route that has a `workdir` also carries `docs`:
 | broad exists, deep `absent` | write deep | exists — stop | write deep |
 | deep exists, broad `absent` | write broad | write broad | exists — stop |
 | both exist | stop | stop | stop |
-| the chosen mode is `partial` | ask | ask | ask |
 
 - **exists — stop**: report the file's path. Regenerate only when the user
   explicitly asks: delete the old file, write afresh, and say that `lecture_read`
@@ -224,8 +234,14 @@ not a file path.
 - **`route: graph`** — choose「繼承的工作」from `references` (prefer
   `influential: true` or `methodology` in `intents`) and「後續發展」from `citations`.
   Note `citations_complete`, `citations_scanned` and `fetched_on` for the caveat line.
+  A present `citations_error` means the citation list was cut short by a failure,
+  not by the three-page cap — say so in「後續發展」rather than treating it as a
+  clean stop.
 - **Papers from your own knowledge** — rival approaches, prerequisite sources,
-  further reading not in the graph — must be checked, up to 25 titles per call:
+  further reading not in the graph — must be checked, up to 25 titles per call,
+  but send them in small batches of about eight titles rather than one 25-title
+  call: results only arrive once the whole call finishes, so a long call that
+  gets cut off loses every result in it, not just the last one.
   ```bash
   python3 ~/.claude/skills/ppread/fetch.py --verify "<title>" "<title>" ...
   ```
@@ -292,9 +308,11 @@ python3 ~/.claude/skills/ppread/fetch.py --list <dir>      # any other directory
 
 Render `papers` as a table — title, year, broad, deep — using `✓` for `read`, `○`
 for `unread`, `…` for `partial`, `—` for `absent`, and a footnote for rows with
-`legacy: true`. Filter or sort only as the user asks. Papers built beside local files
-live outside the library; `--list <dir>` reaches them. A `needs-output-config` result
-means no library is set: handle it as in Step 0.
+`legacy: true`. When `title` is empty (a folder holding only a source file, no
+lecture yet) show the `slug` instead, so the row is still identifiable. Filter or
+sort only as the user asks. Papers built beside local files live outside the
+library; `--list <dir>` reaches them. A `needs-output-config` result means no
+library is set: handle it as in Step 0.
 
 The same state is visible in Obsidian through `papers.base` at the library root.
 
