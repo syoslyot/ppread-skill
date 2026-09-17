@@ -814,6 +814,15 @@ def ensure_base(library: Path) -> None:
         log(f"  papers.base: {e}")
 
 
+# The limit is the filesystem's, not a matter of taste: a single path component
+# is capped at 255 bytes on ext4, xfs and APFS, and the slug is pure ASCII so a
+# character is a byte. 200 leaves room to spare while keeping every realistic
+# title whole — the earlier 60 truncated ordinary ones (BERT's own title is 79).
+# Changing this number re-derives the folder name of every paper already on disk,
+# so it is a breaking change to how a paper is addressed, not a cosmetic tweak.
+SLUG_MAX = 200
+
+
 def slugify(title: str, fallback: str) -> str:
     """ASCII, lowercase, hyphen-separated. The folder name gets pasted into shell
     commands (pdftotext, markitdown) and into Markdown links, where a space has to
@@ -825,8 +834,8 @@ def slugify(title: str, fallback: str) -> str:
     t = t.encode("ascii", "ignore").decode()
     t = re.sub(r"[^\w\s-]", "", t).strip().lower()
     t = re.sub(r"[\s_]+", "-", t)
-    if len(t) > 60:  # cut back to a word boundary rather than leaving "...netwo"
-        t = t[:60].rpartition("-")[0] or t[:60]
+    if len(t) > SLUG_MAX:  # cut back to a word boundary, not "...netwo"
+        t = t[:SLUG_MAX].rpartition("-")[0] or t[:SLUG_MAX]
     return t.strip("-") or fallback
 
 

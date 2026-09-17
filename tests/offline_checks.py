@@ -217,8 +217,25 @@ def check_papers_base() -> None:
     assert f.read_text("utf-8") == "custom\n"
 
 
+def check_slugify_length() -> None:
+    # An ordinary long title survives whole; only a title past SLUG_MAX is cut,
+    # and then at a hyphen so the last word is never left as a fragment.
+    bert = ("BERT: Pre-training of Deep Bidirectional Transformers for "
+            "Language Understanding")
+    assert fetch.slugify(bert, "x") == (
+        "bert-pre-training-of-deep-bidirectional-transformers-for-language-understanding")
+
+    long_title = " ".join(["alpha"] * 40)  # 40 * 6 - 1 = 239 chars slugified
+    s = fetch.slugify(long_title, "x")
+    assert len(s) <= fetch.SLUG_MAX, len(s)
+    assert s.endswith("alpha") and "--" not in s, s
+    assert fetch.slugify("x" * (fetch.SLUG_MAX + 10), "f") == "x" * fetch.SLUG_MAX
+    assert fetch.slugify("——", "fallback") == "fallback"
+
+
 CHECKS = [
     check_lecture_docs_and_conflicts,
+    check_slugify_length,
     check_verify_matching,
     check_s2_key_header,
     check_graph,
