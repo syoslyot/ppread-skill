@@ -830,6 +830,24 @@ def ensure_base(library: Path) -> None:
 SLUG_MAX = 200
 
 
+def resolve_slug(title_override: str, meta_title: str) -> tuple[str, str]:
+    """The folder slug for a network route, or ("", reason) when none can be
+    derived yet. Never falls back to an ID-shaped name: that would mint a
+    workdir different from the one folder_conflict() checks, silently bypassing
+    the duplicate-paper guard on every transient metadata failure."""
+    title = title_override or meta_title
+    if not title:
+        return "", ("metadata lookup returned no title — this is often transient "
+                     "(e.g. a temporary HTTP error); retry the fetch once before "
+                     "asking the user for one")
+    slug = slugify(title, "")
+    if not slug:
+        return "", (f"the title {title!r} leaves no ASCII characters to name a "
+                     "folder with; re-run with --title \"<the paper's English "
+                     "title>\"")
+    return slug, ""
+
+
 def slugify(title: str, fallback: str) -> str:
     """ASCII, lowercase, hyphen-separated. The folder name gets pasted into shell
     commands (pdftotext, markitdown) and into Markdown links, where a space has to
@@ -987,7 +1005,16 @@ def main() -> int:
             if v and not meta.get(k):
                 meta[k] = v
 
-    slug = slugify(args.title or meta["title"], meta["arxiv_id"] or "paper")
+    if args.title and not meta["title"]:
+        # --title disambiguates the folder name; it must not overwrite a title
+        # the lookup actually verified, only fill one the lookup left empty.
+        meta["title"] = args.title
+
+    slug, title_reason = resolve_slug(args.title or "", meta["title"])
+    if not slug:
+        print(json.dumps({"route": "needs-title", "meta": meta, "reason": title_reason},
+                         ensure_ascii=False, indent=2))
+        return 0
     # One folder per paper: the source and the lecture the agent writes live
     # side by side. The folder is created only if there is something to put in
     # it — a failed lookup should not litter the tree with empty directories.

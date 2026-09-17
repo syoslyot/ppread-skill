@@ -373,10 +373,12 @@ Abstract、Introduction、Conclusion 逐段做段落單元。解說聚焦**論�
 
 ## 設計決策
 
-每個決策一個 `###` 小節，依重要性排序：
+每個決策一個 `###` 小節，依重要性排序，題號前綴用 `DD`（`DD1`、`DD2`、…）——
+不用 `D`，因為 `questions.md` 的精讀固定題已經用 `D1`–`D5`，同一份講義裡兩種
+編號不能撞。
 
 ```markdown
-### D1　用 scaled dot-product attention 而非 additive attention
+### DD1　用 scaled dot-product attention 而非 additive attention
 
 - **選擇**　相容性分數用點積並除以 $\sqrt{d_k}$。
 - **放棄的替代方案**　additive attention（Bahdanau et al., 2014）；不縮放的點積。

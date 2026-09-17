@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import io
+import json
 import os
 import re
 import sys
@@ -237,8 +239,84 @@ def check_slugify_length() -> None:
     assert fetch.slugify("——", "fallback") == "fallback"
 
 
+def check_resolve_slug() -> None:
+    assert fetch.resolve_slug("", "") == ("", "metadata lookup returned no title — this "
+                              "is often transient (e.g. a temporary HTTP error); retry "
+                              "the fetch once before asking the user for one")
+    no_ascii, reason = fetch.resolve_slug("", "无标题")
+    assert no_ascii == "" and "no ASCII characters" in reason, reason
+    assert fetch.resolve_slug("", "A Real Title") == ("a-real-title", "")
+    # --title always wins for the slug, even over a title the lookup did supply.
+    assert fetch.resolve_slug("Override Title", "Looked Up Title") == ("override-title", "")
+
+
+def check_main_needs_title_on_metadata_failure() -> None:
+    """Regression guard for the defect this run exposed: a transient arXiv
+    metadata failure must produce `needs-title`, not an ID-shaped slug that
+    bypasses folder_conflict() and duplicates an already-fetched paper."""
+    tmp_out = Path(tempfile.mkdtemp())
+    orig_arxiv_meta = fetch.arxiv_meta
+    orig_argv, orig_stdout = sys.argv, sys.stdout
+    fetch.arxiv_meta = lambda aid: {}  # simulates the HTTP 406 from the real run
+    sys.argv = ["fetch.py", "1111.11111", "--out", str(tmp_out)]
+    sys.stdout = buf = io.StringIO()
+    try:
+        rc = fetch.main()
+    finally:
+        sys.stdout, sys.argv, fetch.arxiv_meta = orig_stdout, orig_argv, orig_arxiv_meta
+
+    assert rc == 0
+    out = json.loads(buf.getvalue())
+    assert out["route"] == "needs-title", out
+    assert out["meta"]["arxiv_id"] == "1111.11111", out
+    assert "transient" in out["reason"], out
+    assert list(tmp_out.iterdir()) == [], list(tmp_out.iterdir())
+
+
+def check_title_flag_populates_meta() -> None:
+    """--title must fill an empty meta.title (fix 2) but never overwrite one the
+    lookup already verified."""
+    tmp_out = Path(tempfile.mkdtemp())
+    orig_arxiv_meta, orig_fetch_eprint = fetch.arxiv_meta, fetch.fetch_eprint
+    orig_argv, orig_stdout = sys.argv, sys.stdout
+    fetch.arxiv_meta = lambda aid: {}
+    fetch.fetch_eprint = lambda aid, dest: ("none", None)  # no network for the e-print itself
+    sys.argv = ["fetch.py", "2222.22222", "--out", str(tmp_out), "--title", "My Title"]
+    sys.stdout = buf = io.StringIO()
+    try:
+        rc = fetch.main()
+    finally:
+        sys.stdout, sys.argv = orig_stdout, orig_argv
+        fetch.arxiv_meta, fetch.fetch_eprint = orig_arxiv_meta, orig_fetch_eprint
+
+    assert rc == 0
+    out = json.loads(buf.getvalue())
+    assert out["route"] == "needs-html", out  # e-print unavailable, but title/slug resolved fine
+    assert out["meta"]["title"] == "My Title", out
+    assert out["slug"] == "my-title", out
+
+    # A title the lookup DID supply must survive --title untouched.
+    tmp_out2 = Path(tempfile.mkdtemp())
+    fetch.arxiv_meta = lambda aid: {"title": "Looked Up Title"}
+    fetch.fetch_eprint = lambda aid, dest: ("none", None)
+    sys.argv = ["fetch.py", "3333.33333", "--out", str(tmp_out2), "--title", "Disambiguator"]
+    sys.stdout = buf = io.StringIO()
+    try:
+        rc = fetch.main()
+    finally:
+        sys.stdout, sys.argv = orig_stdout, orig_argv
+        fetch.arxiv_meta, fetch.fetch_eprint = orig_arxiv_meta, orig_fetch_eprint
+
+    out = json.loads(buf.getvalue())
+    assert out["meta"]["title"] == "Looked Up Title", out
+    assert out["slug"] == "disambiguator", out
+
+
 CHECKS = [
     check_lecture_docs_and_conflicts,
+    check_resolve_slug,
+    check_main_needs_title_on_metadata_failure,
+    check_title_flag_populates_meta,
     check_slugify_length,
     check_clean_authors,
     check_verify_matching,
