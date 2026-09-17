@@ -249,10 +249,19 @@ not a file path.
   **do not use it**, even if it looks like the paper you meant. `not-found` and
   `error` are both left out; tell the user how many titles were dropped and which
   kind of failure it was.
-- **`route: graph-unavailable`** — fall back to the paper's own bibliography (on the
-  latex route the `.bib` entries in `src/` are exact) and run every chosen title
-  through `--verify`. If `--verify` also fails, write the single "無法查證" line
-  that `lecture-format.md` specifies and list no outside papers at all.
+- **`route: graph-unavailable`** — check `reason` first. When it names a 429 or
+  another transient network failure (as opposed to `not found`), wait roughly a
+  minute and retry the same `--graph` call once or twice before accepting the
+  fallback: `--graph` is one call chain that gives up on the first refusal, while
+  `--verify` succeeds against the same throttled pool because it retries per
+  title — a retry here often succeeds too. Setting `PPREAD_S2_API_KEY` is what
+  actually removes the throttling; mention it to the user if retries keep failing.
+  Only once retries are exhausted (or `reason` is `not found`), fall back to the
+  paper's own bibliography (on the latex route the `.bib` entries in `src/` are
+  exact) and run every chosen title through `--verify` — see `lecture-format.md`'s
+  「後續發展」 for how this fallback plays out when `--verify` still works. If
+  `--verify` also fails, write the single "無法查證" line that `lecture-format.md`
+  specifies and list no outside papers at all.
 
 There is no path by which a paper recalled from memory reaches the lecture without
 an `exact` verification.

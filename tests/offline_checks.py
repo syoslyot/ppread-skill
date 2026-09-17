@@ -61,6 +61,10 @@ def check_lecture_docs_and_conflicts() -> None:
     assert fetch.front_matter(f / "lecture.md") == {"title": "Paper A", "arxiv": "1111.11111"}
 
 
+def check_clean_authors() -> None:
+    assert fetch.clean_authors(["An Yang", ":", "", "   "]) == ["An Yang"]
+
+
 def check_verify_matching() -> None:
     rec = {"paperId": "p", "title": "Neural Machine Translation by Jointly Learning to Align and Translate",
            "year": 2014, "externalIds": {"ArXiv": "1409.0473"}}
@@ -236,6 +240,7 @@ def check_slugify_length() -> None:
 CHECKS = [
     check_lecture_docs_and_conflicts,
     check_slugify_length,
+    check_clean_authors,
     check_verify_matching,
     check_s2_key_header,
     check_graph,

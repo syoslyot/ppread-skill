@@ -164,6 +164,13 @@ def identify(raw: str) -> tuple[str, str]:
 # --- metadata sources -----------------------------------------------------
 
 
+def clean_authors(names: list[str]) -> list[str]:
+    """Drop punctuation-only fragments: the "\\\\" line breaks inside a LaTeX
+    \\author{...} block can survive extraction as standalone entries (a bare ":"),
+    and those are never names."""
+    return [n for n in names if any(c.isalnum() for c in n)]
+
+
 def crossref_meta(doi: str) -> dict:
     """Crossref covers every registered DOI and has no punitive rate limit, so it is
     the reliable metadata source. Semantic Scholar is reserved for finding arXiv twins."""
@@ -176,10 +183,10 @@ def crossref_meta(doi: str) -> dict:
     parts = ((m.get("issued") or {}).get("date-parts") or [[]])[0]
     return {
         "title": (m.get("title") or [""])[0],
-        "authors": [
+        "authors": clean_authors([
             " ".join(x for x in (a.get("given"), a.get("family")) if x)
             for a in (m.get("author") or [])
-        ],
+        ]),
         "year": str(parts[0]) if parts else "",
         "venue": (m.get("container-title") or [""])[0],
         # Crossref abstracts arrive as a JATS XML fragment.
@@ -281,11 +288,11 @@ def arxiv_meta(arxiv_id: str) -> dict:
         "title": text("title"),
         "abstract": text("summary"),
         "year": published[:4] if published else "",
-        "authors": [
+        "authors": clean_authors([
             " ".join(a.text.split())
             for a in entry.findall("a:author/a:name", ns)
             if a.text
-        ],
+        ]),
     }
 
 
@@ -968,8 +975,8 @@ def main() -> int:
                 if not meta["year"] and rec.get("year"):
                     meta["year"] = str(rec["year"])
                 if not meta["authors"]:
-                    meta["authors"] = [a.get("name", "")
-                                       for a in (rec.get("authors") or [])]
+                    meta["authors"] = clean_authors([a.get("name", "")
+                                                     for a in (rec.get("authors") or [])])
                 pdf_url = ((rec.get("openAccessPdf") or {}).get("url")) or ""
                 if meta["arxiv_id"]:
                     log(f"  found arXiv twin: {meta['arxiv_id']}")
