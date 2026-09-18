@@ -29,7 +29,7 @@ from pathlib import Path
 # pool; the address is for accountability, never verified, and entirely optional.
 # arXiv only requires that the agent be identifiable at all.
 _CONTACT = os.environ.get("PPREAD_CONTACT", "").strip()
-UA = ("ppread/0.1 (+https://github.com/syoslyot/ppread-skill" +
+UA = ("ppread/0.2 (+https://github.com/syoslyot/ppread-skill" +
       (f"; mailto:{_CONTACT})" if _CONTACT else ")"))
 TIMEOUT = 45
 
@@ -43,12 +43,12 @@ def log(msg: str) -> None:
 
 
 def get(url: str, accept: str | None = None, retries: int = 3,
-        timeout: int = TIMEOUT) -> bytes:
+        timeout: int = TIMEOUT, headers: dict | None = None) -> bytes:
     """Keyless Semantic Scholar rate-limits hard and arXiv's search endpoint is slow
     enough to time out, so both classes of failure are retried with backoff."""
     delay = 3.0
     for attempt in range(retries):
-        req = urllib.request.Request(url, headers={"User-Agent": UA})
+        req = urllib.request.Request(url, headers={"User-Agent": UA, **(headers or {})})
         if accept:
             req.add_header("Accept", accept)
         try:
@@ -107,6 +107,17 @@ def resolve_out(cli_out: str | None) -> tuple[Path | None, dict]:
     return None, cfg
 
 
+def needs_output_config() -> dict:
+    return {
+        "route": "needs-output-config",
+        "cwd": str(Path.cwd()),
+        "suggested_cwd_mode": str(Path.cwd() / "papers"),
+        "config_path": str(CONFIG_PATH),
+        "reason": "no output location has been chosen yet; ask the user, then "
+                  "re-run with --set-output 'fixed:/abs/path' or 'cwd:papers'",
+    }
+
+
 # --- source identification ------------------------------------------------
 
 
@@ -153,6 +164,13 @@ def identify(raw: str) -> tuple[str, str]:
 # --- metadata sources -----------------------------------------------------
 
 
+def clean_authors(names: list[str]) -> list[str]:
+    """Drop punctuation-only fragments: the "\\\\" line breaks inside a LaTeX
+    \\author{...} block can survive extraction as standalone entries (a bare ":"),
+    and those are never names."""
+    return [n for n in names if any(c.isalnum() for c in n)]
+
+
 def crossref_meta(doi: str) -> dict:
     """Crossref covers every registered DOI and has no punitive rate limit, so it is
     the reliable metadata source. Semantic Scholar is reserved for finding arXiv twins."""
@@ -165,10 +183,10 @@ def crossref_meta(doi: str) -> dict:
     parts = ((m.get("issued") or {}).get("date-parts") or [[]])[0]
     return {
         "title": (m.get("title") or [""])[0],
-        "authors": [
+        "authors": clean_authors([
             " ".join(x for x in (a.get("given"), a.get("family")) if x)
             for a in (m.get("author") or [])
-        ],
+        ]),
         "year": str(parts[0]) if parts else "",
         "venue": (m.get("container-title") or [""])[0],
         # Crossref abstracts arrive as a JATS XML fragment.
@@ -193,6 +211,32 @@ def arxiv_search(title: str) -> str:
     return m.group(1) if m else ""
 
 
+S2 = "https://api.semanticscholar.org/graph/v1"
+# Optional: a key gets its own quota instead of the shared keyless pool, which
+# answered 429 by the third quick request in testing. Everything works without it.
+_S2_KEY = os.environ.get("PPREAD_S2_API_KEY", "").strip()
+_s2_last = 0.0
+
+
+def s2_get(path: str) -> dict:
+    """One Semantic Scholar Graph API call, spaced at least a second after the
+    previous one — cheaper than the backoff a 429 would cost."""
+    global _s2_last
+    wait = _s2_last + 1.0 - time.monotonic()
+    if wait > 0:
+        time.sleep(wait)
+    try:
+        return json.loads(get(S2 + path, headers={"x-api-key": _S2_KEY} if _S2_KEY else None))
+    finally:
+        _s2_last = time.monotonic()
+
+
+def s2_ids(rec: dict) -> dict:
+    ext = rec.get("externalIds") or {}
+    return {"title": rec.get("title") or "", "year": rec.get("year"),
+            "arxiv": ext.get("ArXiv") or "", "doi": ext.get("DOI") or ""}
+
+
 def s2_lookup(kind: str, value: str) -> dict | None:
     """Ask Semantic Scholar for cross-IDs. This is what finds an arXiv twin of a
     paywalled paper, which is the single highest-value step in the whole ladder."""
@@ -204,14 +248,12 @@ def s2_lookup(kind: str, value: str) -> dict | None:
 
     fields = "title,abstract,year,authors,externalIds,openAccessPdf,venue"
     if ident.startswith("search:"):
-        url = ("https://api.semanticscholar.org/graph/v1/paper/search"
-               f"?query={urllib.parse.quote(value)}&limit=1&fields={fields}")
+        path = f"/paper/search?query={urllib.parse.quote(value)}&limit=1&fields={fields}"
     else:
-        url = ("https://api.semanticscholar.org/graph/v1/paper/"
-               f"{urllib.parse.quote(ident, safe=':/')}?fields={fields}")
+        path = f"/paper/{urllib.parse.quote(ident, safe=':/')}?fields={fields}"
 
     try:
-        data = json.loads(get(url))
+        data = s2_get(path)
     except urllib.error.HTTPError as e:
         log(f"  semantic scholar: HTTP {e.code}")
         return None
@@ -246,12 +288,126 @@ def arxiv_meta(arxiv_id: str) -> dict:
         "title": text("title"),
         "abstract": text("summary"),
         "year": published[:4] if published else "",
-        "authors": [
+        "authors": clean_authors([
             " ".join(a.text.split())
             for a in entry.findall("a:author/a:name", ns)
             if a.text
-        ],
+        ]),
     }
+
+
+# --- literature grounding -------------------------------------------------
+#
+# A broad lecture names papers outside the one being read. A list of such papers
+# produced from memory gets an author, a year or a title wrong, or names a paper
+# that does not exist, and reads exactly as convincingly as a correct one. So every
+# outside paper must come from the citation graph or pass an exact title match.
+
+VERIFY_MAX = 25
+
+
+def title_match(query: str) -> dict | None:
+    """Semantic Scholar's best title match, or None when it has none. Other
+    failures raise, so callers can tell 'no such paper' from 'could not ask'."""
+    path = f"/paper/search/match?query={urllib.parse.quote(query)}&fields=title,year,externalIds"
+    try:
+        data = s2_get(path)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+    hits = data.get("data") or []
+    return hits[0] if hits else None
+
+
+def match_status(query: str, rec: dict | None) -> dict:
+    """search/match always returns its best candidate, however poor, so a high
+    score proves nothing; only an exact normalised title does. A near miss is
+    reported with its candidate but never counts as verified."""
+    if not rec:
+        return {"query": query, "status": "not-found"}
+    if _norm_title(rec.get("title", "")) == _norm_title(query):
+        return {"query": query, "status": "exact", **s2_ids(rec)}
+    return {"query": query, "status": "mismatch", "candidate": rec.get("title") or ""}
+
+
+def verify_title(query: str) -> dict:
+    try:
+        return match_status(query, title_match(query))
+    except urllib.error.HTTPError as e:
+        return {"query": query, "status": "error", "reason": f"HTTP {e.code}"}
+    except Exception as e:
+        return {"query": query, "status": "error", "reason": str(e)}
+
+
+GRAPH_FIELDS = "title,year,externalIds,citationCount,isInfluential,intents"
+GRAPH_PAGE = 1000
+# Citations come newest-first and the API cannot sort them by impact; offset+limit
+# is capped below 10000. Past three pages a keyless run spends minutes in backoff
+# only to collect more recent, rarely-cited papers, so three is where it stops.
+GRAPH_PAGES = 3
+GRAPH_TOP_CITATIONS = 50
+
+
+def graph_node(edge: dict, side: str) -> dict:
+    p = edge.get(side) or {}
+    return {**s2_ids(p), "citations": p.get("citationCount") or 0,
+            "influential": bool(edge.get("isInfluential")),
+            "intents": edge.get("intents") or []}
+
+
+def rank(nodes: list[dict]) -> list[dict]:
+    return sorted(nodes, key=lambda n: (not n["influential"], -n["citations"]))
+
+
+def graph(source: str) -> dict:
+    """The paper's neighbourhood in the citation graph, ranked locally.
+    citations_complete is true only when the citation list was read to its end."""
+    kind, value = identify(source)
+    if kind == "file":
+        return {"route": "graph-unavailable",
+                "reason": "pass the paper's arXiv ID, DOI or title, not a file path"}
+    try:
+        if kind == "query":
+            rec = title_match(value)
+            if not rec or _norm_title(rec.get("title", "")) != _norm_title(value):
+                return {"route": "graph-unavailable", "reason": "not found"}
+            pid = rec["paperId"]
+        else:
+            prefix = {"arxiv": "ARXIV:", "doi": "DOI:", "url": "URL:"}[kind]
+            pid = urllib.parse.quote(prefix + value, safe=":/")
+        paper = s2_get(f"/paper/{pid}?fields=title,year,externalIds,citationCount,referenceCount")
+        refs = s2_get(f"/paper/{pid}/references?limit={GRAPH_PAGE}&fields={GRAPH_FIELDS}")
+    except urllib.error.HTTPError as e:
+        return {"route": "graph-unavailable",
+                "reason": "not found" if e.code == 404 else f"HTTP {e.code}"}
+    except Exception as e:
+        return {"route": "graph-unavailable", "reason": str(e)}
+
+    cites: list[dict] = []
+    error, exhausted = "", False
+    for page in range(GRAPH_PAGES):
+        try:
+            data = s2_get(f"/paper/{pid}/citations?limit={GRAPH_PAGE}"
+                          f"&offset={page * GRAPH_PAGE}&fields={GRAPH_FIELDS}")
+        except Exception as e:
+            error = str(e)
+            break
+        cites += [graph_node(x, "citingPaper") for x in data.get("data") or []]
+        if data.get("next") is None:
+            exhausted = True
+            break
+
+    result = {"route": "graph", "paper": s2_ids(paper),
+              "references": rank([graph_node(x, "citedPaper") for x in refs.get("data") or []]),
+              "citations": rank(cites)[:GRAPH_TOP_CITATIONS],
+              "citation_count": paper.get("citationCount") or 0,
+              "citations_scanned": len(cites),
+              "citations_complete": exhausted and not error,
+              "fetched_on": time.strftime("%Y-%m-%d")}
+    if error:
+        result["citations_error"] = error
+    return result
 
 
 # --- arXiv e-print --------------------------------------------------------
@@ -417,33 +573,52 @@ def pdf_title(path: Path) -> tuple[str, str, str]:
 # One folder holds one paper. Two papers can still want the same folder: the slug
 # comes from the title, and titles collide ("A Survey of ..." twice over, a
 # workshop paper later reprinted, a 60-char truncation that erases the difference).
-# Left unchecked the damage is silent — lecture.md ends up describing a different
+# Left unchecked the damage is silent — a lecture ends up describing a different
 # paper than the source lying next to it, and nothing in either file says so.
 
 
-def lecture_identity(workdir: Path) -> dict | None:
-    """Which paper a folder already holds, read from lecture.md's YAML front
-    matter. That front matter is the only on-disk record of it — ppread writes no
-    meta.json on purpose — and its keys are fixed by lecture-format.md, so a plain
-    'key: value' scan is exact here and needs no YAML parser. None means no lecture
-    yet; an empty dict means one exists but identifies nothing."""
-    f = workdir / "lecture.md"
+DOC_FILES = ("broad.md", "deep.md", "broad.part.md", "deep.part.md", "lecture.md")
+
+
+def front_matter(f: Path) -> dict | None:
+    """The 'key: value' lines of a Markdown file's YAML front matter. The keys
+    ppread reads are fixed by lecture-format.md and never nested, so a plain scan
+    is exact and needs no YAML parser. None means no such file; an empty dict
+    means one exists but says nothing."""
     if not f.is_file():
         return None
     try:
         text = f.read_text("utf-8", errors="replace")
     except OSError as e:
-        log(f"  lecture.md: {e}")
+        log(f"  {f.name}: {e}")
         return {}
     if not text.startswith("---"):
         return {}
     body = text.partition("\n")[2].partition("\n---")[0]
-    ident = {}
+    fields = {}
     for line in body.splitlines():
         k, sep, v = line.partition(":")
-        if sep and k.strip() in ("title", "doi", "arxiv"):
-            ident[k.strip()] = v.strip().strip("\"'")
-    return ident
+        if sep:
+            fields[k.strip()] = v.strip().strip("\"'")
+    return fields
+
+
+def lecture_docs(workdir: Path) -> dict:
+    """Which lectures a folder holds and how far each has got. A lecture is written
+    as <mode>.part.md and renamed only once its last section is done, so a .part
+    file means unfinished even when a finished file of that mode also exists — a
+    regeneration in progress is not done."""
+    docs = {"legacy": (workdir / "lecture.md").is_file()}
+    for mode in ("broad", "deep"):
+        if (workdir / f"{mode}.part.md").is_file():
+            docs[mode] = "partial"
+            continue
+        fields = front_matter(workdir / f"{mode}.md")
+        if fields is None:
+            docs[mode] = "absent"
+        else:
+            docs[mode] = "read" if fields.get("lecture_read", "").lower() == "true" else "unread"
+    return docs
 
 
 def _norm_arxiv(v: str) -> str:
@@ -475,18 +650,23 @@ RESOLVE = ("if it is the same paper, delete or rename the folder that is already
 
 
 def folder_conflict(workdir: Path, meta: dict, slug: str) -> dict | None:
-    """A conflict result, or None when the folder is free or already this paper's."""
-    ident = lecture_identity(workdir)
-    if ident is None or same_paper(ident, meta):
-        return None
-    held = ident.get("title") or ident.get("arxiv") or ident.get("doi")
-    return {"route": "conflict", "slug": slug, "workdir": str(workdir), "meta": meta,
-            "occupant": {k: ident.get(k, "") for k in ("title", "doi", "arxiv")},
-            "reason": f"{workdir} already holds a lecture for "
-                      + (f"a different paper ({held})" if held
-                         else "a paper it does not identify")
-                      + "; refusing to put a second paper in one folder",
-            "resolve": RESOLVE}
+    """A conflict result, or None when every lecture in the folder is this paper's.
+    Every file is checked, not just the first: a broad.md that matches says nothing
+    about a deep.md written for another paper whose title landed on the same slug."""
+    for name in DOC_FILES:
+        ident = front_matter(workdir / name)
+        if ident is None or same_paper(ident, meta):
+            continue
+        held = ident.get("title") or ident.get("arxiv") or ident.get("doi")
+        return {"route": "conflict", "slug": slug, "workdir": str(workdir), "meta": meta,
+                "occupant": {"file": name,
+                             **{k: ident.get(k, "") for k in ("title", "doi", "arxiv")}},
+                "reason": f"{workdir / name} is a lecture for "
+                          + (f"a different paper ({held})" if held
+                             else "a paper it does not identify")
+                          + "; refusing to put a second paper in one folder",
+                "resolve": RESOLVE}
+    return None
 
 
 def adopt_local(src: Path, out_override: Path | None, title_override: str) -> dict:
@@ -544,12 +724,12 @@ def adopt_local(src: Path, out_override: Path | None, title_override: str) -> di
         # paper entirely, nothing here can tell — and both leave two sources in a
         # folder meant for one, so say so instead of quietly adding to the pile.
         others = sorted(p.name for p in workdir.glob("*")
-                        if p.is_file() and p.name != "lecture.md")
+                        if p.is_file() and p.name not in DOC_FILES)
         if others:
             return {"route": "conflict", "slug": slug, "workdir": str(workdir),
                     "meta": meta, "path": str(src), "occupant": {"files": others},
                     "reason": f"{workdir} already holds {', '.join(others)} and no "
-                              "lecture.md saying which paper that is",
+                              "lecture saying which paper that is",
                     "resolve": RESOLVE}
         workdir.mkdir(parents=True, exist_ok=True)
         shutil.move(str(src), str(dest))
@@ -557,6 +737,7 @@ def adopt_local(src: Path, out_override: Path | None, title_override: str) -> di
 
     ext = dest.suffix.lower()
     return {"slug": slug, "workdir": str(workdir), "meta": meta,
+            "docs": lecture_docs(workdir),
             "route": "needs-pdf" if ext == ".pdf" else "local",
             "tier": 6 if ext == ".pdf" else 1,
             "pdf_path": str(dest) if ext == ".pdf" else "",
@@ -564,7 +745,107 @@ def adopt_local(src: Path, out_override: Path | None, title_override: str) -> di
             "reason": "local file; no LaTeX source available"}
 
 
+def list_library(root: Path) -> dict:
+    """Every paper folder under root with the state of its lectures. A paper folder
+    is a non-hidden directory holding at least one file directly: that admits a
+    folder with only a source in it and skips containers such as assets/, whose
+    contents are all subdirectories."""
+    papers = []
+    try:
+        dirs = sorted(p for p in root.iterdir()
+                      if p.is_dir() and not p.name.startswith(".")) if root.is_dir() else []
+    except OSError as e:
+        log(f"  {root}: {e}")
+        dirs = []
+    for d in dirs:
+        try:
+            has_file = any(p.is_file() for p in d.iterdir())
+        except OSError as e:
+            log(f"  {d}: {e}")
+            continue
+        if not has_file:
+            continue
+        fields = next((fm for fm in (front_matter(d / n) for n in DOC_FILES) if fm), {})
+        docs = lecture_docs(d)
+        papers.append({"slug": d.name, "title": fields.get("title", ""),
+                       "year": fields.get("year", ""), "tier": fields.get("tier", ""),
+                       "broad": docs["broad"], "deep": docs["deep"],
+                       "legacy": docs["legacy"]})
+    return {"route": "list", "library": str(root), "papers": papers}
+
+
 # --- output ---------------------------------------------------------------
+
+# Filtered by properties rather than folder, so lectures built beside local files
+# elsewhere in the vault show up too, and a reader's own `type: reading` notes do not.
+PAPERS_BASE = """\
+filters:
+  and:
+    - 'type == "reading"'
+    - 'generated == "claude"'
+views:
+  - type: table
+    name: 未讀講義
+    filters:
+      and:
+        - 'lecture_read != true'
+    order:
+      - title
+      - mode
+      - year
+      - lecture_read
+  - type: table
+    name: 全部講義
+    order:
+      - title
+      - mode
+      - year
+      - lecture_read
+    groupBy:
+      property: note.mode
+      direction: ASC
+"""
+
+
+def ensure_base(library: Path) -> None:
+    """Place an Obsidian Bases view at the library root, once. Never overwritten:
+    the reader may have customised its columns and filters since."""
+    f = library / "papers.base"
+    if f.exists():
+        return
+    try:
+        library.mkdir(parents=True, exist_ok=True)
+        f.write_text(PAPERS_BASE, "utf-8")
+        log(f"  wrote {f}")
+    except OSError as e:
+        log(f"  papers.base: {e}")
+
+
+# The limit is the filesystem's, not a matter of taste: a single path component
+# is capped at 255 bytes on ext4, xfs and APFS, and the slug is pure ASCII so a
+# character is a byte. 200 leaves room to spare while keeping every realistic
+# title whole — the earlier 60 truncated ordinary ones (BERT's own title is 79).
+# Changing this number re-derives the folder name of every paper already on disk,
+# so it is a breaking change to how a paper is addressed, not a cosmetic tweak.
+SLUG_MAX = 200
+
+
+def resolve_slug(title_override: str, meta_title: str) -> tuple[str, str]:
+    """The folder slug for a network route, or ("", reason) when none can be
+    derived yet. Never falls back to an ID-shaped name: that would mint a
+    workdir different from the one folder_conflict() checks, silently bypassing
+    the duplicate-paper guard on every transient metadata failure."""
+    title = title_override or meta_title
+    if not title:
+        return "", ("metadata lookup returned no title — this is often transient "
+                     "(e.g. a temporary HTTP error); retry the fetch once before "
+                     "asking the user for one")
+    slug = slugify(title, "")
+    if not slug:
+        return "", (f"the title {title!r} leaves no ASCII characters to name a "
+                     "folder with; re-run with --title \"<the paper's English "
+                     "title>\"")
+    return slug, ""
 
 
 def slugify(title: str, fallback: str) -> str:
@@ -578,8 +859,8 @@ def slugify(title: str, fallback: str) -> str:
     t = t.encode("ascii", "ignore").decode()
     t = re.sub(r"[^\w\s-]", "", t).strip().lower()
     t = re.sub(r"[\s_]+", "-", t)
-    if len(t) > 60:  # cut back to a word boundary rather than leaving "...netwo"
-        t = t[:60].rpartition("-")[0] or t[:60]
+    if len(t) > SLUG_MAX:  # cut back to a word boundary, not "...netwo"
+        t = t[:SLUG_MAX].rpartition("-")[0] or t[:SLUG_MAX]
     return t.strip("-") or fallback
 
 
@@ -603,7 +884,35 @@ def main() -> int:
                     help="print the remembered output location and exit")
     ap.add_argument("--keep-comments", action="store_true",
                     help="keep whole-line LaTeX comments (stripped by default)")
+    ap.add_argument("--verify", nargs="+", metavar="TITLE",
+                    help=f"check up to {VERIFY_MAX} paper titles against Semantic "
+                         "Scholar; only an exact normalised title match counts")
+    ap.add_argument("--graph", metavar="ID_OR_TITLE",
+                    help="references and citations of a paper from Semantic Scholar, "
+                         "ranked by influence then citation count")
+    ap.add_argument("--list", nargs="?", const="", metavar="DIR",
+                    help="list paper folders and the state of their lectures; "
+                         "defaults to the configured library")
     args = ap.parse_args()
+
+    if args.verify:
+        if len(args.verify) > VERIFY_MAX:
+            log(f"--verify takes at most {VERIFY_MAX} titles per call")
+            return 2
+        print(json.dumps({"route": "verify",
+                          "results": [verify_title(t) for t in args.verify]},
+                         ensure_ascii=False, indent=2))
+        return 0
+
+    if args.graph:
+        print(json.dumps(graph(args.graph), ensure_ascii=False, indent=2))
+        return 0
+
+    if args.list is not None:
+        root = Path(args.list).expanduser() if args.list else resolve_out(None)[0]
+        out = needs_output_config() if root is None else list_library(root)
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
 
     if args.show_config:
         cfg = load_config()
@@ -649,14 +958,7 @@ def main() -> int:
     # user has not agreed to.
     out_root, _cfg = resolve_out(args.out)
     if out_root is None:
-        print(json.dumps({
-            "route": "needs-output-config",
-            "cwd": str(Path.cwd()),
-            "suggested_cwd_mode": str(Path.cwd() / "papers"),
-            "config_path": str(CONFIG_PATH),
-            "reason": "no output location has been chosen yet; ask the user, then "
-                      "re-run with --set-output 'fixed:/abs/path' or 'cwd:papers'",
-        }, ensure_ascii=False, indent=2))
+        print(json.dumps(needs_output_config(), ensure_ascii=False, indent=2))
         return 0
 
     meta: dict = {"title": "", "authors": [], "year": "", "doi": "", "arxiv_id": "",
@@ -691,8 +993,8 @@ def main() -> int:
                 if not meta["year"] and rec.get("year"):
                     meta["year"] = str(rec["year"])
                 if not meta["authors"]:
-                    meta["authors"] = [a.get("name", "")
-                                       for a in (rec.get("authors") or [])]
+                    meta["authors"] = clean_authors([a.get("name", "")
+                                                     for a in (rec.get("authors") or [])])
                 pdf_url = ((rec.get("openAccessPdf") or {}).get("url")) or ""
                 if meta["arxiv_id"]:
                     log(f"  found arXiv twin: {meta['arxiv_id']}")
@@ -703,7 +1005,16 @@ def main() -> int:
             if v and not meta.get(k):
                 meta[k] = v
 
-    slug = slugify(args.title or meta["title"], meta["arxiv_id"] or "paper")
+    if args.title and not meta["title"]:
+        # --title disambiguates the folder name; it must not overwrite a title
+        # the lookup actually verified, only fill one the lookup left empty.
+        meta["title"] = args.title
+
+    slug, title_reason = resolve_slug(args.title or "", meta["title"])
+    if not slug:
+        print(json.dumps({"route": "needs-title", "meta": meta, "reason": title_reason},
+                         ensure_ascii=False, indent=2))
+        return 0
     # One folder per paper: the source and the lecture the agent writes live
     # side by side. The folder is created only if there is something to put in
     # it — a failed lookup should not litter the tree with empty directories.
@@ -717,7 +1028,8 @@ def main() -> int:
         print(json.dumps(conflict, ensure_ascii=False, indent=2))
         return 0
 
-    result = {"slug": slug, "workdir": str(workdir), "meta": meta}
+    result = {"slug": slug, "workdir": str(workdir), "meta": meta,
+              "docs": lecture_docs(workdir)}
 
     if meta["arxiv_id"]:
         workdir.mkdir(parents=True, exist_ok=True)
@@ -766,6 +1078,8 @@ def main() -> int:
 
     # No meta.json: the metadata belongs in the lecture's front matter, where a
     # reader actually sees it. Writing it twice means two files to keep in sync.
+    if result["route"] != "unresolved":
+        ensure_base(out_root)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
