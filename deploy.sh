@@ -9,6 +9,7 @@ DEST="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}/ppread"
 mkdir -p "$DEST"
 install -m 0644 "$SRC/SKILL.md"          "$DEST/SKILL.md"
 install -m 0644 "$SRC/lecture-format.md" "$DEST/lecture-format.md"
+install -m 0644 "$SRC/questions.md"      "$DEST/questions.md"
 install -m 0755 "$SRC/fetch.py"          "$DEST/fetch.py"
 
 echo "deployed -> $DEST"

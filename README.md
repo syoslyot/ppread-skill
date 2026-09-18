@@ -1,10 +1,12 @@
 # ppread
 
-A Claude Code skill that turns one research paper into a paragraph-level bilingual
-lecture: English original, Traditional Chinese translation, and an explanation of
-the background, prior work, experimental rationale and formulas behind it.
+A Claude Code skill that turns one research paper into bilingual lectures in two
+modes: a **broad** lecture that places the paper in its field, and a **deep**
+lecture that takes it apart. Both translate the paper paragraph by paragraph into
+Traditional Chinese and end with questions for the reader.
 
-把一篇論文變成逐段對照的講義——原文、中譯、詳解。給讀英文論文還很慢的人。
+把一篇論文變成兩種講義：**廣讀**幫忙定位這篇論文，**精讀**逐段拆解與批判。
+兩者都逐段對照原文與中譯，最後附上問題與摺疊的參考答案。
 
 ## 這不是翻譯工具
 
@@ -19,10 +21,8 @@ the background, prior work, experimental rationale and formulas behind it.
 > We compute the dot products of the query with all keys, divide each by
 > $\sqrt{d_k}$, and apply a softmax function to obtain the weights on the values.
 
-**譯**　計算方式是把 query 與所有 key 做點積，各除以 $\sqrt{d_k}$，再經過
+**中文翻譯**　計算方式是把 query 與所有 key 做點積，各除以 $\sqrt{d_k}$，再經過
 softmax 函數得到 value 的權重。
-
-**解**
 
 - **為什麼要除以 $\sqrt{d_k}$**　點積的變異數隨 $d_k$ 線性成長，$d_k$ 大時會落在
   softmax 的飽和區，梯度趨近於零。除以 $\sqrt{d_k}$ 把變異數壓回 $O(1)$。論文在
@@ -31,7 +31,25 @@ softmax 函數得到 value 的權重。
   複雜度相同，但點積能直接呼叫最佳化過的矩陣乘法核心。這是工程考量而非理論優勢。
 ```
 
-翻譯與解釋嚴格分離：翻譯忠於原文（包括原文含糊之處），評論與補充一律進「解」。
+翻譯與解說嚴格分離：翻譯是一整段、忠於原文（包括原文含糊之處），評論與補充一律寫成
+粗體小標題的條列。
+
+## 兩種講義
+
+| | 廣讀 `broad.md` | 精讀 `deep.md` |
+|---|---|---|
+| 回答 | 這篇在研究脈絡的哪裡、值不值得精讀 | 論述成不成立、每個設計為什麼這樣做 |
+| 逐段對照 | Abstract、Introduction、Conclusion，加上核心方法的關鍵段落 | 全文 |
+| 論文以外 | 前置知識（含「懂到什麼程度」）、繼承的工作、其他路線、後續發展、延伸閱讀 | 只談這篇 |
+| 彙整 | — | 主張與證據對照表、設計決策拆解 |
+| 問題 | 固定題 B1–B5 ＋ 客製題 | 固定題 D1–D5 ＋ 客製題 |
+
+固定題每篇論文一字不改，讀過一批論文後可以回頭比較同一題的作答；參考答案預設摺疊，
+先作答再展開。
+
+**廣讀裡出現的每一篇外部論文都經過查證**：來自 Semantic Scholar 的引用網路，或標題
+完全吻合的查詢結果。憑記憶列出的文獻清單常常作者、年份或標題錯一項，甚至整篇不存在，
+而讀起來跟正確的一樣可信——所以查證不過的論文不會出現在講義裡。
 
 ## 保真度階梯
 
@@ -85,6 +103,10 @@ cd ppread-skill && ./deploy.sh      # → ~/.claude/skills/ppread/
 選用：`export PPREAD_CONTACT=you@example.com` 可進入 Crossref 的 polite pool
 （較快的查詢佇列）。不設也完全能用。
 
+選用：`export PPREAD_S2_API_KEY=<key>` 讓引用網路與標題查證使用自己的 Semantic Scholar
+配額。不帶 key 時共用公開配額，連續查詢容易被限流；不設也能用，只是可能要等。
+真正省掉等待的是這把 key——沒有 key 的公開配額本來就會被節流，等待是預期行為而非異常。
+
 ## 第一次執行：決定講義放哪裡
 
 第一次跑 `/ppread` 時會先問一個問題，**在下載任何東西之前**：
@@ -111,21 +133,25 @@ fetch.py <source> --out X  # 單次覆寫，不改設定
 ## 用法
 
 ```
-/ppread 1706.03762
-/ppread 10.1109/CVPR.2016.90
-/ppread https://dl.acm.org/doi/10.1145/3292500.3330701
-/ppread ./papers/某篇論文.pdf
+/ppread 1706.03762                  # 沒有講義 → 廣讀；已有廣讀 → 精讀
+/ppread --broad 10.1109/CVPR.2016.90
+/ppread --deep https://dl.acm.org/doi/10.1145/3292500.3330701
+/ppread --deep ./papers/某篇論文.pdf
+/ppread --list                      # 每篇論文的講義與閱讀狀態
 ```
 
 一篇論文一個資料夾，原始檔與講義放在一起：
 
 ```
-<資料庫>/attention-is-all-you-need/       # 網路來源：進設定好的資料庫
+<資料庫>/
+    papers.base                          # Obsidian Bases 視圖
+    attention-is-all-you-need/           # 網路來源：進設定好的資料庫
+        source.tex       # 只有走 LaTeX 路線才有
+        src/             # 解壓出的 e-print 樹，圖檔在這裡
+        broad.md         # 廣讀講義
+        deep.md          # 精讀講義
 ~/Downloads/attention-is-all-you-need/   # 本機檔案：就建在該檔案旁邊
-    source.tex       # 只有走 LaTeX 路線才有
-    src/             # 解壓出的 e-print 樹，圖檔在這裡
-    1706.03762.pdf   # 只有本機路線才有：被移進來的原檔
-    lecture.md       # 講義
+        1706.03762.pdf   # 被移進來的原檔
 ```
 
 資料夾名稱一律是純 ASCII、小寫、以 `-` 連接的英文 slug，從論文英文標題產生
@@ -134,7 +160,7 @@ fetch.py <source> --out X  # 單次覆寫，不改設定
 引號、後者要 percent-escape，兩邊都會出事。重音字母折成基底字母（`Schölkopf` →
 `scholkopf`）；完全沒有 ASCII 可用的標題會停下來要求補英文標題，不會亂猜。
 
-metadata（標題、作者、年份、DOI、arXiv ID、保真度 tier）全部寫在 `lecture.md`
+metadata（標題、作者、年份、DOI、arXiv ID、保真度 tier）全部寫在每份講義
 的 YAML front matter，不另開 metadata 檔。
 
 手邊已經有 PDF 的話丟路徑即可，結構會一致：ppread 讀該檔自己的 metadata 取得標題，
@@ -144,11 +170,24 @@ metadata（標題、作者、年份、DOI、arXiv ID、保真度 tier）全部�
 目標已存在時拒絕覆寫；對已經收納過的檔案再跑一次會落在同一個資料夾，不會巢狀。
 
 資料夾名稱來自標題，所以兩篇論文可能搶同一個資料夾——真的同名的兩篇 survey、
-研討會版與期刊版、或是前 60 字元相同的兩個長標題。這時回 `route: conflict` 並且
-**什麼都不寫**：不下載、不建資料夾，本機檔案留在原處。判斷依據是該資料夾裡
-`lecture.md` 的 front matter：arXiv ID 最優先，其次 DOI，兩者都沒有才比標題。
+研討會版與期刊版、或是前 200 字元相同的兩個長標題。這時回 `route: conflict` 並且
+**什麼都不寫**：不下載、不建資料夾，本機檔案留在原處。判斷依據是該資料夾裡每一份講義的 front matter：arXiv ID 最優先，其次 DOI，兩者都沒有才比標題。
 解法是刪掉舊資料夾（確實是同一篇）或用 `--title "<能區分的標題>"` 重跑（確實是兩篇），
 不要手動改資料夾名字——名字是從標題推出來的，改掉之後下次會找不到而重抓一次。
+
+## 閱讀進度
+
+每份講義的 front matter 有一個 `lecture_read`，產生時是 `false`。讀完在 Obsidian 的
+屬性欄勾選即可（不用 Obsidian 就把 `false` 改成 `true`）。
+
+- `/ppread --list` 列出資料庫裡每篇論文的廣讀、精讀狀態：已讀、未讀、寫到一半、未產生。
+- 資料庫根目錄的 `papers.base` 在 Obsidian 裡是一張表格，預設視圖就是「未讀講義」。
+  這個檔案只在第一次寫入，之後怎麼改都不會被覆蓋。
+
+狀態刻意不寫進資料夾名稱：狀態一變就得改名，講義裡的圖片嵌入與自己筆記裡的連結會跟著斷。
+
+寫到一半中斷的講義叫 `broad.part.md`／`deep.part.md`，完成時才改成正式檔名；
+下次執行會問要續寫還是重寫。
 
 ## 它刻意不做的事
 
@@ -158,6 +197,9 @@ metadata（標題、作者、年份、DOI、arXiv ID、保真度 tier）全部�
 如果用 Zettelkasten，這條界線是整個設計的重點：那套方法的價值來自自己用話重述
 想法，那個動作本身就是思考發生的地方。代寫卡片會留下一堆看起來很整齊、卻沒有
 任何一個念頭真的經過大腦的檔案——卡片盒被掏空成剪貼簿。
+
+講義最後的參考答案也不是筆記：它預設摺疊，是作答之後拿來對照的材料。把自己的答案
+貼進對話可以討論落差，但 skill 不會把答案整理成筆記或寫進任何檔案。
 
 ## 授權
 
