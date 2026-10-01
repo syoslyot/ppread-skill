@@ -79,7 +79,8 @@ def pdf_kind(path: Path) -> str   # "paper" | "slides" | ""
 ### 4.4 講義狀態
 
 - `DOC_FILES` 加入 `research.md`、`research.part.md`。
-- `lecture_docs(workdir)` 回傳加入 `kind`：任一份講義 front matter 的 `kind`，皆無則依資料夾內來源 PDF 的 `pdf_kind`，再無則 `paper`。
+- `lecture_docs(workdir, kind="")` 回傳加入 `kind`：呼叫端已知時直接用（`adopt_local` 知道自己判定的種類）；否則取任一份講義 front matter 的 `kind`，皆無則依資料夾內來源 PDF 的 `pdf_kind`，再無則 `paper`。
+- `adopt_local` 判定種類的順序：`--kind` → 所在資料夾講義 front matter 的 `kind` → `pdf_kind`。中間那一步讓「已有講義的直式簡報」重跑時不需要再帶 `--kind`，也不會被誤判成論文而搬進新的巢狀資料夾。
 - `kind: slides` 時多回報 `research` 的狀態；`paper` 維持 `broad`、`deep`。
 - 模式選擇規則（SKILL.md）改為依種類的模式序列：`paper` = broad → deep；`slides` = broad → deep → research。無旗標時取第一個未完成者。
 
@@ -116,15 +117,21 @@ fetch.py --search "<query>" [--since YEAR] [--limit N]   # N 預設 10
 ```
 
 - 端點：Semantic Scholar `/graph/v1/paper/search/bulk`，`sort=citationCount:desc`；`--since` 對應 `year=<YEAR>-`。
-- 欄位：`title`、`year`、`authors`、`venue`、`citationCount`、`externalIds`（取 `ArXiv`、`DOI`）、`abstract`（截斷至約 300 字元）。
-- 輸出：`{"route": "search", "query", "since", "papers": [...], "fetched_on"}`；失敗為 `{"route": "search-unavailable", "reason"}`。
+- 欄位：`title`、`year`、`authors`、`venue`、`citationCount`、`externalIds`（取 `ArXiv`、`DOI`）、`abstract`（截斷至約 300 字元）、`fieldsOfStudy`。
+- 輸出：`{"route": "search", "query", "since", "total", "papers": [...], "fetched_on"}`；失敗為 `{"route": "search-unavailable", "query", "reason"}`。零筆結果是 `route: search` 且 `papers: []`，與失敗區分。
 - 走 `s2_get`，沿用重試、退避與 `PPREAD_S2_API_KEY`。
-- **實作前必須先實測**：bulk 端點的 `sort`、`year` 參數行為，以及 `query` 的布林語法（片語需加引號）。這三點目前是記憶中的 API 行為，未經驗證。實測結果不符時，回到本節修訂再實作。
+- **實測結果（2026-10-01，`"systolic array"`）**：
+  - `sort=citationCount:desc` 與 `year=2023-` 如預期運作；加引號的片語查詢有效（total 5756，加年份後 794）。
+  - **`limit` 被忽略**：每次回最多 1000 筆，截斷必須在 `fetch.py` 做。
+  - **`abstract` 常為 null**（多數舊論文與部分出版商），所以加上 `fieldsOfStudy` 輔助相關性判斷。
+  - 引用數排序的前幾名會混入只在內文提到該詞的邊緣論文（第一名是 "Unifying computers and dynamical systems..."），agent 端過濾是必要的，不是保險。
 - 代價：每主題 2 次 search＋1 次 graph（最多 3 頁），5 個主題約 25 次請求；keyless 時 429 退避使 research 成為最慢的模式。
 
 ### 4.7 `--list`
 
 `papers` 每列加 `kind`；簡報列多 `research` 狀態。
+
+簡報是兩層資料夾，課程資料夾本身沒有檔案、只有章節子資料夾——現行「直接含檔案才算論文資料夾」的規則會把它當容器跳過，章節永遠列不出來。所以：沒有直接含檔案的非隱藏資料夾（`assets` 除外）往下看一層，其中直接含檔案的子資料夾列為一筆，`slug` 為 `<course-slug>/<title-slug>`。
 
 ## 5. 三份簡報講義
 
@@ -149,7 +156,7 @@ fetch.py --search "<query>" [--since YEAR] [--limit N]   # N 預設 10
 - **補完**：投影片省略的推導步驟、每一步為何成立、與前面單元的關係。
 - **實作例**：用投影片自己的例子實際走一遍（如 3-tap FIR 的 SFG transposition、p.74 DFG 的 ASAP／ALAP）。
 - **筆記核對**：列出對應的課堂筆記，判定為正確、需補充或有誤，附理由。
-- 依賴圖表的單元：有 `pdftoppm` 時把該頁輸出為 `assets/` 下的 PNG 並以 `![[...]]` 嵌入；沒有則只寫頁碼。
+- 依賴圖表的單元：有 `pdftoppm` 時把該頁輸出為 `<workdir>/assets/pdf-pNNN.png`（NNN 為補零的 PDF 頁碼），以相對路徑 `![投影片 9](./assets/pdf-p010.png)` 嵌入；沒有則只寫頁碼。放在章節資料夾內而非 library 的 `assets/<slug>/`：簡報資料夾建在 PDF 旁，可能根本不在 library 裡；用相對路徑而非 `![[...]]`：每個章節都有 `pdf-p010.png`，wikilink 無法唯一解析。
 
 結尾：SD1–SD5，客製題 SD6 起最多 3 題，形式為考題式的計算或推導。
 
@@ -260,7 +267,7 @@ fetch.py --search "<query>" [--since YEAR] [--limit N]   # N 預設 10
 
 **Live**
 
-- 實測 `--search` 對真實 S2 端點（§4.6 的三項待驗證行為）
+- 實作後再對真實 S2 端點跑一次 `--search`，確認 `fetch.py` 的編碼（`urlencode`）送出的請求與 §4.6 實測時一致
 - 樣本 PDF 的拋棄式複本，`--out` 指向暫存目錄，三個模式各產一份。檢查：兩層資料夾、頁碼雙標、p.8 筆記核對抓到 floding → folding、術語段涵蓋 p.20–23 的名詞、research 每篇論文都在 API 輸出中出現
 - `CLAUDE_SKILLS_DIR=<tmp> ./deploy.sh`：6 個檔案皆部署
 
