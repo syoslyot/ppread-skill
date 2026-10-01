@@ -25,7 +25,9 @@ python3 ~/.claude/skills/ppread/fetch.py "<pdf>" --kind slides --course "<course
 
 - `--course`: the course's English name as the deck shows it (`VLSI DSP`) — not
   the institution, not the lecturer. A deck that shows only a course code uses the
-  code.
+  code. A running-header label is often a template carried over from another
+  course; when it disagrees with the name the slides themselves use, take the
+  slides' name and say so in the Step 1 survey.
 - `--title`: `Ch`, the two-digit chapter number, then the chapter's English title
   — `Ch01 Introduction`. Zero-padding keeps chapters in order in a listing. A deck
   with no chapter number uses its English title alone.
