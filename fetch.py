@@ -410,6 +410,45 @@ def graph(source: str) -> dict:
     return result
 
 
+SEARCH_FIELDS = "title,year,authors,venue,citationCount,externalIds,abstract,fieldsOfStudy"
+SEARCH_LIMIT = 10
+SEARCH_MAX = 1000
+ABSTRACT_MAX = 300
+
+
+def search(query: str, since: int | None = None, limit: int = SEARCH_LIMIT) -> dict:
+    """Papers on a topic, most-cited first — research mode's only source for a
+    deck, which cites almost nothing a citation graph could start from. The bulk
+    endpoint is the one search that sorts by citation count. It ignores `limit`
+    and returns up to 1000 records, so the cut happens here. Abstracts are often
+    null; fieldsOfStudy is returned so the agent can still drop namesakes from
+    other fields. Zero results is a search that worked, distinct from one that
+    could not be made."""
+    params = {"query": query, "sort": "citationCount:desc", "fields": SEARCH_FIELDS}
+    if since:
+        params["year"] = f"{since}-"
+    try:
+        data = s2_get("/paper/search/bulk?"
+                      + urllib.parse.urlencode(params, quote_via=urllib.parse.quote))
+    except urllib.error.HTTPError as e:
+        return {"route": "search-unavailable", "query": query, "reason": f"HTTP {e.code}"}
+    except Exception as e:
+        return {"route": "search-unavailable", "query": query, "reason": str(e)}
+
+    papers = []
+    for p in (data.get("data") or [])[:limit]:
+        abstract = (p.get("abstract") or "").strip()
+        if len(abstract) > ABSTRACT_MAX:
+            abstract = abstract[:ABSTRACT_MAX].rsplit(" ", 1)[0] + "…"
+        papers.append({**s2_ids(p),
+                       "authors": clean_authors([a.get("name", "") for a in p.get("authors") or []]),
+                       "venue": p.get("venue") or "", "citations": p.get("citationCount") or 0,
+                       "fields": p.get("fieldsOfStudy") or [], "abstract": abstract})
+    return {"route": "search", "query": query, "since": since,
+            "total": data.get("total") or 0, "papers": papers,
+            "fetched_on": time.strftime("%Y-%m-%d")}
+
+
 # --- arXiv e-print --------------------------------------------------------
 
 
@@ -1024,6 +1063,14 @@ def main() -> int:
     ap.add_argument("--graph", metavar="ID_OR_TITLE",
                     help="references and citations of a paper from Semantic Scholar, "
                          "ranked by influence then citation count")
+    ap.add_argument("--search", metavar="QUERY",
+                    help="papers on a topic from Semantic Scholar, most-cited first; "
+                         "quote phrases inside the query: '\"systolic array\"'")
+    ap.add_argument("--since", type=int, metavar="YEAR",
+                    help="with --search: only papers from YEAR onward")
+    ap.add_argument("--limit", type=int, default=SEARCH_LIMIT, metavar="N",
+                    help=f"with --search: at most N papers (default {SEARCH_LIMIT}, "
+                         f"max {SEARCH_MAX})")
     ap.add_argument("--list", nargs="?", const="", metavar="DIR",
                     help="list paper folders and the state of their lectures; "
                          "defaults to the configured library")
@@ -1040,6 +1087,14 @@ def main() -> int:
 
     if args.graph:
         print(json.dumps(graph(args.graph), ensure_ascii=False, indent=2))
+        return 0
+
+    if args.search:
+        if not 1 <= args.limit <= SEARCH_MAX:
+            log(f"--limit must be between 1 and {SEARCH_MAX}")
+            return 2
+        print(json.dumps(search(args.search, args.since, args.limit),
+                         ensure_ascii=False, indent=2))
         return 0
 
     if args.list is not None:

@@ -504,6 +504,58 @@ def check_kind_flags_rejected_on_network_source() -> None:
         assert rc == 2, extra
 
 
+def check_search() -> None:
+    long_abs = "word " * 100
+    records = [
+        {"title": "Systolic Arrays for (VLSI).", "year": 1978, "citationCount": 1064,
+         "externalIds": {"CorpusId": 1}, "authors": [{"name": "H. Kung"}, {"name": ":"}],
+         "venue": "", "abstract": None, "fieldsOfStudy": ["Computer Science"]},
+        {"title": "SIGMA", "year": 2020, "citationCount": 541,
+         "externalIds": {"DOI": "10.1109/x", "ArXiv": "2001.00001"}, "authors": [],
+         "venue": "HPCA", "abstract": long_abs, "fieldsOfStudy": None},
+        {"title": "third", "year": 2021, "citationCount": 1, "externalIds": {},
+         "authors": [], "abstract": "short"},
+    ]
+    calls: list[str] = []
+
+    def fake(path: str) -> dict:
+        calls.append(path)
+        return {"total": 3, "data": records}
+
+    orig = fetch.s2_get
+    fetch.s2_get = fake
+    try:
+        r = fetch.search('"systolic array"', since=2023, limit=2)
+        no_year = fetch.search("dct")
+        fetch.s2_get = lambda path: {"total": 0}
+        empty = fetch.search("nothing matches this")
+        def refuse(path: str) -> dict:
+            raise fetch.urllib.error.HTTPError(path, 429, "Too Many Requests", {}, None)
+        fetch.s2_get = refuse
+        failed = fetch.search("dct")
+    finally:
+        fetch.s2_get = orig
+
+    assert r["route"] == "search" and r["total"] == 3 and r["since"] == 2023, r
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", r["fetched_on"])
+    p0, p1 = r["papers"]  # cut to limit client-side: the endpoint ignores limit
+    assert p0 == {"title": "Systolic Arrays for (VLSI).", "year": 1978, "arxiv": "", "doi": "",
+                  "authors": ["H. Kung"], "venue": "", "citations": 1064,
+                  "fields": ["Computer Science"], "abstract": ""}, p0
+    assert p1["arxiv"] == "2001.00001" and p1["doi"] == "10.1109/x" and p1["fields"] == []
+    assert len(p1["abstract"]) <= fetch.ABSTRACT_MAX + 1 and p1["abstract"].endswith("…"), p1
+
+    q = calls[0]
+    assert q.startswith("/paper/search/bulk?"), q
+    assert "query=%22systolic%20array%22" in q and "sort=citationCount%3Adesc" in q, q
+    assert "year=2023-" in q, q
+    assert "year=" not in calls[1] and len(no_year["papers"]) == 3
+
+    assert empty == {"route": "search", "query": "nothing matches this", "since": None,
+                     "total": 0, "papers": [], "fetched_on": empty["fetched_on"]}, empty
+    assert failed == {"route": "search-unavailable", "query": "dct", "reason": "HTTP 429"}, failed
+
+
 CHECKS = [
     check_lecture_docs_and_conflicts,
     check_slides_lecture_state,
@@ -523,6 +575,7 @@ CHECKS = [
     check_adopt_slides,
     check_adopt_kind,
     check_kind_flags_rejected_on_network_source,
+    check_search,
 ]
 
 if __name__ == "__main__":
