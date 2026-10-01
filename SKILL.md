@@ -359,9 +359,10 @@ target.
 **Never name an outside paper that was not grounded.** Every paper other than the
 one being read — in context sections, further reading, prerequisite sources, a
 critique that cites a conflicting result, or a reference answer — comes from
-`--graph` output or an `exact` `--verify`. A list recalled from memory gets an
-author, a year or a title wrong, or names a paper that does not exist, and reads
-exactly as convincingly as a correct one; a reader will go looking for it.
+`--graph` output, `--search` output (slides research) or an `exact` `--verify`.
+A list recalled from memory gets an author, a year or a title wrong, or names a
+paper that does not exist, and reads exactly as convincingly as a correct one; a
+reader will go looking for it.
 
 **Translate and explain as separate acts.** The translation renders what the
 authors wrote, including where they were vague. The explanation is where context,

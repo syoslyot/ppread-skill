@@ -95,8 +95,8 @@ Add the plan for the mode:
 - **deep** — the technical units, the worked example planned for each, the notes to check
 - **research** — 4–6 topics, each with its source slides and the queries
   planned; the estimated number of Semantic Scholar requests and time (keyless:
-  about 25 requests and several minutes of backoff — mention that
-  `PPREAD_S2_API_KEY` removes it)
+  roughly 20–25 requests and up to tens of minutes, because of 429 backoff —
+  mention that `PPREAD_S2_API_KEY` removes most of it)
 
 Wait for the user to confirm or adjust.
 
@@ -118,7 +118,9 @@ python3 ~/.claude/skills/ppread/fetch.py --graph "<arXiv ID, else DOI, else titl
   `abstract` (often empty). Drop what does not fit, and tell the user how many
   were dropped per topic.
 - The `--graph` anchor is the most foundational relevant paper from the first
-  search. Handle `graph-unavailable` as SKILL.md Step 2 does.
+  search. On `graph-unavailable`, retry as SKILL.md Step 2 does; its bibliography
+  fallback does not exist for a deck, so if retries fail, write that layer as
+  unavailable (see `slides-format.md`).
 - `search-unavailable` with a 429 or a network reason: wait about a minute and
   retry once or twice. If it still fails, that layer of that topic is written as
   unavailable (see `slides-format.md`), never filled from memory.
