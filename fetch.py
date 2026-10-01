@@ -546,26 +546,57 @@ def assemble(root: Path, strip_comments: bool) -> str | None:
 # --- local files ---
 
 
-def pdf_title(path: Path) -> tuple[str, str, str]:
-    """(title, author, year) from the PDF's own metadata via pdfinfo, when
-    available. LaTeX-produced PDFs almost always carry a usable /Title."""
+def pdfinfo(path: Path) -> dict:
+    """pdfinfo's 'Key: value' lines, or {} when pdfinfo is missing or fails."""
     if not shutil.which("pdfinfo"):
-        return "", "", ""
+        return {}
     try:
         out = subprocess.run(["pdfinfo", str(path)], capture_output=True,
                              text=True, timeout=20).stdout
     except Exception as e:
         log(f"  pdfinfo: {e}")
-        return "", "", ""
+        return {}
     fields = {}
     for line in out.splitlines():
         k, _, v = line.partition(":")
         fields[k.strip()] = v.strip()
-    year = ""
+    return fields
+
+
+def pdf_title(path: Path, info: dict | None = None) -> tuple[str, str, str]:
+    """(title, author, year) from the PDF's own metadata. LaTeX-produced PDFs
+    almost always carry a usable /Title."""
+    fields = pdfinfo(path) if info is None else info
     m = re.search(r"\b(19|20)\d{2}\b", fields.get("CreationDate", ""))
+    return fields.get("Title", ""), fields.get("Author", ""), m.group(0) if m else ""
+
+
+_MEDIABOX = re.compile(rb"/MediaBox\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]")
+
+
+def pdf_kind(path: Path, info: dict | None = None) -> str:
+    """'slides' when the first page displays landscape, 'paper' otherwise, '' when
+    the page size cannot be read. Orientation is the one signal every deck shares
+    and almost no paper does. The byte scan is the fallback for machines without
+    pdfinfo; it misses a MediaBox packed into a compressed object stream, and the
+    caller then asks rather than guesses."""
+    info = pdfinfo(path) if info is None else info
+    m = re.match(r"([\d.]+) x ([\d.]+)", info.get("Page size", ""))
     if m:
-        year = m.group(0)
-    return fields.get("Title", ""), fields.get("Author", ""), year
+        w, h = float(m[1]), float(m[2])
+        if info.get("Page rot", "0") in ("90", "270"):
+            w, h = h, w
+    else:
+        try:
+            box = _MEDIABOX.search(path.read_bytes())
+        except OSError as e:
+            log(f"  {path.name}: {e}")
+            return ""
+        if not box:
+            return ""
+        x0, y0, x1, y1 = map(float, box.groups())
+        w, h = abs(x1 - x0), abs(y1 - y0)
+    return "slides" if w > h else "paper"
 
 
 # --- folder identity ------------------------------------------------------

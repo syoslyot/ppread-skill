@@ -223,6 +223,35 @@ def check_papers_base() -> None:
     assert f.read_text("utf-8") == "custom\n"
 
 
+def check_pdf_kind() -> None:
+    d = Path(tempfile.mkdtemp())
+    f = d / "x.pdf"
+    f.write_bytes(b"%PDF-1.4\n")
+    orig = fetch.pdfinfo
+    try:
+        fetch.pdfinfo = lambda p: {"Page size": "720 x 540 pts", "Page rot": "0"}
+        assert fetch.pdf_kind(f) == "slides"
+        fetch.pdfinfo = lambda p: {"Page size": "595.276 x 841.89 pts (A4)", "Page rot": "0"}
+        assert fetch.pdf_kind(f) == "paper"
+        # Rotated portrait page displays landscape.
+        fetch.pdfinfo = lambda p: {"Page size": "612 x 792 pts (letter)", "Page rot": "90"}
+        assert fetch.pdf_kind(f) == "slides"
+        # No pdfinfo: fall back to the first /MediaBox in the raw bytes.
+        fetch.pdfinfo = lambda p: {}
+        f.write_bytes(b"%PDF-1.4\n1 0 obj\n<< /Type /Page /MediaBox [ 0 0 960 540 ] >>\nendobj\n")
+        assert fetch.pdf_kind(f) == "slides"
+        f.write_bytes(b"%PDF-1.4\n1 0 obj\n<< /Type /Page /MediaBox [0 0 612 792] >>\nendobj\n")
+        assert fetch.pdf_kind(f) == "paper"
+        # MediaBox hidden in a compressed object stream: undecidable.
+        f.write_bytes(b"%PDF-1.5\n1 0 obj\n<< /Type /ObjStm /Filter /FlateDecode >>\nendobj\n")
+        assert fetch.pdf_kind(f) == ""
+        assert fetch.pdf_kind(d / "missing.pdf") == ""
+    finally:
+        fetch.pdfinfo = orig
+    # An explicit info dict is used as-is.
+    assert fetch.pdf_kind(f, {"Page size": "720 x 540 pts"}) == "slides"
+
+
 def check_slugify_length() -> None:
     # An ordinary long title survives whole; only a title past SLUG_MAX is cut,
     # and then at a hyphen so the last word is never left as a fragment.
@@ -325,6 +354,7 @@ CHECKS = [
     check_list_library,
     check_list_library_unreadable_dir,
     check_papers_base,
+    check_pdf_kind,
 ]
 
 if __name__ == "__main__":
