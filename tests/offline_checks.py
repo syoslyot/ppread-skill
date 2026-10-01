@@ -170,6 +170,11 @@ def check_list_library() -> None:
     (lib / ".obsidian").mkdir()
     (lib / ".obsidian" / "app.json").write_text("{}", "utf-8")
     (lib / "papers.base").write_text("", "utf-8")
+    (lib / "assets" / "a-read" / "fig.png").write_bytes(b"png")
+    write_doc(lib / "vlsi-dsp" / "ch01-introduction" / "broad.md",
+              {"kind": "slides", "title": "Ch01 Introduction", "course": "VLSI DSP",
+               "year": "2026", "tier": "6", "mode": "broad", "lecture_read": "false"})
+    (lib / "empty-course").mkdir()
 
     r = fetch.list_library(lib)
     assert r["route"] == "list" and r["library"] == str(lib)
@@ -182,6 +187,9 @@ def check_list_library() -> None:
          "broad": "absent", "deep": "absent", "legacy": False},
         {"slug": "d-partial", "kind": "paper", "title": "Partial", "year": "", "tier": "",
          "broad": "partial", "deep": "absent", "legacy": False},
+        {"slug": "vlsi-dsp/ch01-introduction", "kind": "slides", "title": "Ch01 Introduction",
+         "year": "2026", "tier": "6", "broad": "unread", "deep": "absent",
+         "research": "absent", "legacy": False},
     ], r["papers"]
 
     assert fetch.list_library(lib / "nope") == {"route": "list", "library": str(lib / "nope"),

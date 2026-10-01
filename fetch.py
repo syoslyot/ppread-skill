@@ -863,32 +863,42 @@ def place(src: Path, workdir: Path, meta: dict, slug: str, kind: str) -> dict:
             "reason": "local file; no LaTeX source available"}
 
 
-def list_library(root: Path) -> dict:
-    """Every paper folder under root with the state of its lectures. A paper folder
-    is a non-hidden directory holding at least one file directly: that admits a
-    folder with only a source in it and skips containers such as assets/, whose
-    contents are all subdirectories."""
-    papers = []
+def _subdirs(d: Path) -> list[Path]:
     try:
-        dirs = sorted(p for p in root.iterdir()
-                      if p.is_dir() and not p.name.startswith(".")) if root.is_dir() else []
+        return sorted(p for p in d.iterdir() if p.is_dir() and not p.name.startswith("."))
     except OSError as e:
-        log(f"  {root}: {e}")
-        dirs = []
-    for d in dirs:
-        try:
-            has_file = any(p.is_file() for p in d.iterdir())
-        except OSError as e:
-            log(f"  {d}: {e}")
-            continue
-        if not has_file:
-            continue
-        fields = next((fm for fm in (front_matter(d / n) for n in DOC_FILES) if fm), {})
-        docs = lecture_docs(d)
-        papers.append({"slug": d.name, "kind": docs["kind"], "title": fields.get("title", ""),
-                       "year": fields.get("year", ""), "tier": fields.get("tier", ""),
-                       "broad": docs["broad"], "deep": docs["deep"],
-                       "legacy": docs["legacy"]})
+        log(f"  {d}: {e}")
+        return []
+
+
+def _holds_file(d: Path) -> bool:
+    try:
+        return any(p.is_file() for p in d.iterdir())
+    except OSError as e:
+        log(f"  {d}: {e}")
+        return False
+
+
+def library_row(d: Path, slug: str) -> dict:
+    fields = next((fm for fm in (front_matter(d / n) for n in DOC_FILES) if fm), {})
+    docs = lecture_docs(d)
+    return {"slug": slug, "title": fields.get("title", ""), "year": fields.get("year", ""),
+            "tier": fields.get("tier", ""), **docs}
+
+
+def list_library(root: Path) -> dict:
+    """Every paper or chapter folder under root with the state of its lectures. A
+    lecture folder is a non-hidden directory holding at least one file directly.
+    A directory holding only directories is a container: a course, whose chapters
+    are listed one level down as course/chapter — except assets/, whose
+    subdirectories hold figures, not sources."""
+    papers = []
+    for d in _subdirs(root) if root.is_dir() else []:
+        if _holds_file(d):
+            papers.append(library_row(d, d.name))
+        elif d.name != "assets":
+            papers += [library_row(c, f"{d.name}/{c.name}")
+                       for c in _subdirs(d) if _holds_file(c)]
     return {"route": "list", "library": str(root), "papers": papers}
 
 
