@@ -185,6 +185,7 @@ def check_list_library() -> None:
     write_doc(lib / "vlsi-dsp" / "ch01-introduction" / "broad.md",
               {"kind": "slides", "title": "Ch01 Introduction", "course": "VLSI DSP",
                "year": "2026", "tier": "6", "mode": "broad", "lecture_read": "false"})
+    (lib / "vlsi-dsp" / ".DS_Store").write_bytes(b"\0")  # must not turn the course into a row
     (lib / "empty-course").mkdir()
 
     r = fetch.list_library(lib)

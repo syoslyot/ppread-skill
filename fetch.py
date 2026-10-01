@@ -921,7 +921,7 @@ def _subdirs(d: Path) -> list[Path]:
 
 def _holds_file(d: Path) -> bool:
     try:
-        return any(p.is_file() for p in d.iterdir())
+        return any(p.is_file() and not p.name.startswith(".") for p in d.iterdir())
     except OSError as e:
         log(f"  {d}: {e}")
         return False
