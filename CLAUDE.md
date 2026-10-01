@@ -4,17 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Source-of-truth repo for the **`/ppread`** Claude Code skill (a personal global skill, like `gitf` and `p2issue`). The directory is named `ppread-skill`; the deployed skill name and its invocation are both `ppread`. The skill turns one research paper into bilingual lectures in two modes: `broad.md` places the paper (abstract/introduction/conclusion paragraph by paragraph, assumed outside knowledge, core idea, literature context grounded in the citation graph) and `deep.md` judges it (every paragraph with critical analysis, claims versus evidence, design decisions). Both end with reader questions and folded reference answers.
+Source-of-truth repo for the **`/ppread`** Claude Code skill (a personal global skill, like `gitf` and `p2issue`). The directory is named `ppread-skill`; the deployed skill name and its invocation are both `ppread`. The skill turns one research paper into bilingual lectures in two modes: `broad.md` places the paper (abstract/introduction/conclusion paragraph by paragraph, assumed outside knowledge, core idea, literature context grounded in the citation graph) and `deep.md` judges it (every paragraph with critical analysis, claims versus evidence, design decisions). A local course slide deck gets three: `broad.md` maps the chapter and explains every term, `deep.md` works through each technical unit (derivations, worked examples, a check of the student's notes), `research.md` links its topics to foundational and recent papers. Every lecture ends with reader questions and folded reference answers.
 
 ## Deploy model (source vs. deployment target)
 
 This repo is the **source of truth**. The live skill lives at `~/.claude/skills/ppread/`. Editing files here does nothing until deployed.
 
 ```bash
-./deploy.sh   # copies SKILL.md + lecture-format.md + questions.md + fetch.py -> ~/.claude/skills/ppread/
+./deploy.sh   # copies SKILL.md + lecture-format.md + questions.md + slides.md + slides-format.md + fetch.py -> ~/.claude/skills/ppread/
 ```
 
-Only those four files are deployable. `deploy.sh`, `VERSION`, `tests/`, `docs/` and this file are development-only and must never be copied to the skill dir.
+Only those six files are deployable. `deploy.sh`, `VERSION`, `tests/`, `docs/` and this file are development-only and must never be copied to the skill dir.
 
 ## Architecture: two layers, split by determinism
 
@@ -22,6 +22,8 @@ Only those four files are deployable. `deploy.sh`, `VERSION`, `tests/`, `docs/` 
 - **`SKILL.md`** — orchestration and judgment, executed by the agent. Chooses the mode, plans coverage, splits passages, translates, explains, writes questions, enforces the honesty rules.
 - **`lecture-format.md`** — the output contract for `broad.md` and `deep.md`, loaded in Step 3. Written in Chinese because it governs Chinese output and its worked examples must be in the target language.
 - **`questions.md`** — what to ask and how to answer, loaded in Step 4. Kept apart from `lecture-format.md` because what to ask is a different concern from how the page looks.
+- **`slides.md`** — the workflow for `kind: slides`, loaded after Step 0 in place of SKILL.md's Steps 1–4. Separate so that a paper run never reads slide rules and a slide run never wades through paper rules.
+- **`slides-format.md`** — the output contract for the three slide lectures, in Chinese for the same reason as `lecture-format.md`.
 
 Rule of thumb: anything with a right answer belongs in `fetch.py`; anything requiring judgment belongs in `SKILL.md`.
 
@@ -54,13 +56,18 @@ Rule of thumb: anything with a right answer belongs in `fetch.py`; anything requ
 - **Read state lives in front matter, not in folder names.** `lecture_read` is a checkbox property per lecture. Encoding state as a folder prefix was rejected: every state change would rename the folder and break image embeds and the user's own links (Obsidian only rewrites links for renames it performs); `[` `]` are glob syntax in the shell and reserved link characters in Obsidian; and the state would exist twice. The key is snake_case because Bases formulas cannot read hyphenated property keys.
 - **`<mode>.part.md` until the last section is written.** "The lecture exists" must mean "the lecture is finished", or an interrupted run looks complete to `--list` and to the next run. The rename is the single completion signal, and `fetch.py` reads it from the filename rather than parsing content.
 - **`papers.base` is written once and never overwritten.** The reader may customise the view. It filters on `type` and `generated` rather than on a folder, so lectures built beside local files elsewhere in the vault appear too.
+- **A local PDF is `slides` when its first page displays landscape.** Orientation is the one signal every deck shares and almost no paper does. `pdfinfo`'s page size (with rotation) first, a raw `/MediaBox` scan without it, `route: needs-kind` when neither can read it (a MediaBox inside a compressed object stream). A lecture's recorded `kind` outranks the page size on re-runs, so a portrait deck adopted with `--kind slides` is never reclassified and moved again.
+- **Slides never trust `/Title`.** Deck exports default it to "Slide 1" or "PowerPoint Presentation"; using it would mint a wrong folder name with nothing to flag it. `--course` and `--title` are both required, read off the cover by the agent.
+- **Slides live under `<course-slug>/<title-slug>/`.** A course's chapters sit together. `same_paper` refuses a match across differing courses, because two courses sharing a chapter title is far more likely than two papers sharing a title. `--list` descends one level into a directory that holds only directories (except `assets/`) to find them.
+- **The student's annotations are a separate layer, never merged.** Exported note PDFs carry typed notes, handwriting and whole inserted pages over the slides. Lectures quote them in their own callout and check them; presenting a note as slide text would put words in the lecturer's mouth. Inserted pages are also why every page reference carries both the printed slide number and the PDF page.
+- **Research mode searches; it does not recall.** A deck cites almost nothing, so there is no citation graph to start from. `--search` uses Semantic Scholar's bulk endpoint, the only search that sorts by citation count; it ignores `limit` (returns up to 1000) so the cut is local, and abstracts are often null so `fieldsOfStudy` is returned for filtering. Verified 2026-10-01 against `"systolic array"`.
 
 ## Testing
 
 No test framework. Two layers:
 
 - `python3 tests/offline_checks.py` — network-free assertions on `fetch.py` functions (lecture state, conflicts, verify matching, graph ranking and paging with a stubbed `s2_get`, listing, `papers.base`). Standard library only; run it after every change to `fetch.py`.
-- Live runs against real sources from the shell. Verified cases: an arXiv ID (`1706.03762`, multi-file `\input` structure), an IEEE DOI (`10.1109/CVPR.2016.90` → `1512.03385`), an ACM URL; `--graph 1706.03762` (incomplete citations), `--graph 1905.02175` (complete in three pages); `--verify` on a real, a fabricated and a re-cased title. Semantic Scholar rate-limits keyless clients hard — space live runs out, or set `PPREAD_S2_API_KEY`.
+- Live runs against real sources from the shell. Verified cases: an arXiv ID (`1706.03762`, multi-file `\input` structure), an IEEE DOI (`10.1109/CVPR.2016.90` → `1512.03385`), an ACM URL; `--graph 1706.03762` (incomplete citations), `--graph 1905.02175` (complete in three pages); `--verify` on a real, a fabricated and a re-cased title; a 79-page landscape course deck with typed and handwritten notes (adopted into `vlsi-dsp/ch01-introduction/`); `--search '"systolic array"' --since 2023`. Semantic Scholar rate-limits keyless clients hard — space live runs out, or set `PPREAD_S2_API_KEY`.
 
 Use `--out` to write somewhere disposable when testing; for local-file cases point at a throwaway copy instead, since the file is moved in place. `CLAUDE_SKILLS_DIR=<tmp> ./deploy.sh` deploys somewhere other than the live skill.
 
