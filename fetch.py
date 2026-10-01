@@ -637,11 +637,19 @@ def front_matter(f: Path) -> dict | None:
 
 
 def doc_kind(workdir: Path) -> str:
-    """The kind a lecture in this folder records, '' when none records a known one."""
+    """The kind a lecture in this folder records, or 'paper' when a lecture exists
+    but doesn't record a kind—all lectures predate the kind field. Returns '' only
+    when no lecture file exists at all."""
+    found_lecture = False
     for name in DOC_FILES:
-        kind = (front_matter(workdir / name) or {}).get("kind", "")
-        if kind in MODES:
-            return kind
+        fields = front_matter(workdir / name)
+        if fields is not None:
+            found_lecture = True
+            kind = fields.get("kind", "")
+            if kind in MODES:
+                return kind
+    if found_lecture:
+        return "paper"
     return ""
 
 

@@ -375,6 +375,17 @@ def check_slides_lecture_state() -> None:
     finally:
         fetch.pdfinfo = orig
 
+    # Kind-less lecture (predates the feature) with landscape PDF: lecture wins, treated as paper.
+    h = Path(tempfile.mkdtemp())
+    write_doc(h / "broad.md", {**A, "mode": "broad"})
+    (h / "deck.pdf").write_bytes(b"%PDF-1.4\n<< /MediaBox [0 0 720 540] >>\n")
+    orig = fetch.pdfinfo
+    fetch.pdfinfo = lambda p: {}
+    try:
+        assert fetch.lecture_docs(h)["kind"] == "paper"
+    finally:
+        fetch.pdfinfo = orig
+
 
 def check_same_paper_course() -> None:
     fm = {"title": "Ch01 Introduction", "course": "VLSI DSP"}
