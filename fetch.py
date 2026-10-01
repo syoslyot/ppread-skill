@@ -835,6 +835,13 @@ def adopt_slides(src: Path, out_override: Path | None, title: str, course: str,
     Both names come from the agent, read off the cover and the running headers:
     deck exports carry /Title values like "Slide 1" or "PowerPoint Presentation",
     and trusting one would mint a wrong folder name with nothing to flag it."""
+    # Re-run beside its own lecture: the lecture already names the deck, so omitted
+    # names are read back from it, and differing ones must surface as a conflict
+    # in this folder rather than mint a second one nested inside it.
+    beside = doc_kind(src.parent) == "slides"
+    if beside:
+        fm = next((f for f in (front_matter(src.parent / n) for n in DOC_FILES) if f), {})
+        course, title = course or fm.get("course", ""), title or fm.get("title", "")
     pages = info.get("Pages", "")
     meta = {"kind": "slides", "title": title, "course": course, "authors": [],
             "year": pdf_title(src, info)[2], "pages": int(pages) if pages.isdigit() else 0,
@@ -853,7 +860,7 @@ def adopt_slides(src: Path, out_override: Path | None, title: str, course: str,
 
     if out_override is not None:
         workdir = out_override / course_slug / slug
-    elif src.parent.name == slug and src.parent.parent.name == course_slug:
+    elif beside or (src.parent.name == slug and src.parent.parent.name == course_slug):
         workdir = src.parent
     elif src.parent.name == course_slug:
         workdir = src.parent / slug

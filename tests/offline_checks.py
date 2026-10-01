@@ -456,6 +456,19 @@ def check_adopt_slides() -> None:
     r = _adopt(moved, DECK_INFO, course="VLSI DSP", title="Ch01 Introduction")
     assert r["workdir"] == str(wd) and moved.exists(), r
 
+    # Beside a slides lecture, omitted names are read back from its front matter.
+    write_doc(wd / "broad.md", {"kind": "slides", "title": "Ch01 Introduction",
+                                "course": "VLSI DSP", "mode": "broad", "lecture_read": "false"})
+    for kw in ({}, {"course": "VLSI DSP"}, {"title": "Ch01 Introduction"}):
+        r = _adopt(moved, DECK_INFO, **kw)
+        assert r["route"] == "needs-pdf" and r["workdir"] == str(wd) and moved.exists(), (kw, r)
+        assert r["meta"]["title"] == "Ch01 Introduction" and r["meta"]["course"] == "VLSI DSP", r
+        assert r["docs"]["broad"] == "unread", r
+    # Names that differ from that lecture are a conflict, not a nested second folder.
+    r = _adopt(moved, DECK_INFO, course="VLSI DSP", title="Ch1 Introduction")
+    assert r["route"] == "conflict" and r["workdir"] == str(wd) and moved.exists(), r
+    assert not (wd / "vlsi-dsp").exists() and not (wd / "ch1-introduction").exists()
+
     # PDF already inside the course folder: only the chapter level is created.
     src2 = root / "vlsi-dsp" / "ch2.pdf"
     src2.write_bytes(b"%PDF-1.4\n")

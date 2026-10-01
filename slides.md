@@ -34,6 +34,8 @@ python3 ~/.claude/skills/ppread/fetch.py "<pdf>" --kind slides --course "<course
 - Keep `--kind slides` on every re-run if Step 0 needed it once.
 - The folder becomes `<course-slug>/<title-slug>/` beside the PDF; re-running on
   the moved file reuses it.
+- A re-run beside an existing lecture may omit `--course` and `--title`: they are
+  read from that lecture. Ones that differ from it are reported as a conflict.
 
 Fill the front matter's `authors` (the lecturer) and `institution` from the same
 pages; `pages` and `year` come from Step 0's `meta`.
