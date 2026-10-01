@@ -340,7 +340,7 @@ def verify_title(query: str) -> dict:
         return {"query": query, "status": "error", "reason": str(e)}
 
 
-GRAPH_FIELDS = "title,year,externalIds,citationCount,isInfluential,intents"
+GRAPH_FIELDS = "title,year,authors,externalIds,citationCount,isInfluential,intents"
 GRAPH_PAGE = 1000
 # Citations come newest-first and the API cannot sort them by impact; offset+limit
 # is capped below 10000. Past three pages a keyless run spends minutes in backoff
@@ -351,7 +351,9 @@ GRAPH_TOP_CITATIONS = 50
 
 def graph_node(edge: dict, side: str) -> dict:
     p = edge.get(side) or {}
-    return {**s2_ids(p), "citations": p.get("citationCount") or 0,
+    return {**s2_ids(p),
+            "authors": clean_authors([a.get("name", "") for a in p.get("authors") or []]),
+            "citations": p.get("citationCount") or 0,
             "influential": bool(edge.get("isInfluential")),
             "intents": edge.get("intents") or []}
 

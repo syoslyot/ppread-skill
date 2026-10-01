@@ -156,6 +156,17 @@ def check_graph() -> None:
     assert fetch.graph(__file__)["route"] == "graph-unavailable"
 
 
+def check_graph_authors() -> None:
+    """A lecture cites outside papers as "<first author> et al. (<year>)" from
+    fetch.py output alone, so graph nodes must carry authors like search results do."""
+    edge = {"citingPaper": {"title": "c", "year": 2021, "externalIds": {}, "citationCount": 3,
+                            "authors": [{"name": "H. T. Kung"}, {"name": ":"}]},
+            "isInfluential": False, "intents": []}
+    assert "authors" in fetch.GRAPH_FIELDS.split(","), fetch.GRAPH_FIELDS
+    assert fetch.graph_node(edge, "citingPaper")["authors"] == ["H. T. Kung"]
+    assert fetch.graph_node({"citedPaper": {"title": "r"}}, "citedPaper")["authors"] == []
+
+
 def check_list_library() -> None:
     lib = Path(tempfile.mkdtemp())
     write_doc(lib / "a-read" / "broad.md",
@@ -568,6 +579,7 @@ CHECKS = [
     check_verify_matching,
     check_s2_key_header,
     check_graph,
+    check_graph_authors,
     check_list_library,
     check_list_library_unreadable_dir,
     check_papers_base,
