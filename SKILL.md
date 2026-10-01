@@ -5,8 +5,9 @@ description: "Bilingual lectures from research papers and course slides — invo
 
 # /ppread — Lectures from Papers and Course Slides
 
-Turn one paper into a lecture the user can read straight through. There are two
-kinds, written to two files, for two different jobs:
+Turn one paper, or one course chapter, into lectures the user can read straight
+through. A paper gets two modes, each written to its own file, for two different
+jobs:
 
 - **broad** (`broad.md`) — place the paper: what it answers, what it assumes, what
   its core idea is, where it sits among other work, what to read next.
@@ -33,9 +34,10 @@ translating, explaining and questioning are judgment and live here.
 `<source>` may be an arXiv ID or URL, a DOI, a publisher URL, a paper title, or a
 local PDF path. The mode is a flag, never a bare word: a title such as
 `deep residual learning for image recognition` would otherwise lose its first word
-to the mode and resolve to the wrong paper. Strip `--broad`/`--deep`/`--research` before passing the source to `fetch.py`;
-`fetch.py` does not accept them. `--research` exists only for slides: on a paper,
-say that a paper's broad lecture already places it in the literature, and stop.
+to the mode and resolve to the wrong paper. Strip `--broad`/`--deep`/`--research`
+before passing the source to `fetch.py`; `fetch.py` does not accept them.
+`--research` exists only for slides: on a paper, say that a paper's broad lecture
+already places it in the literature, and stop.
 `--kind` and `--course` are `fetch.py` flags you add yourself when Step 0 asks for
 them; the user never types them.
 
@@ -71,7 +73,7 @@ The script prints one JSON object. Read `route` and act:
 Every non-conflict route that has a `workdir` also carries `docs`:
 
 ```json
-"docs": {"broad": "read", "deep": "absent", "legacy": false}
+"docs": {"kind": "paper", "broad": "read", "deep": "absent", "legacy": false}
 ```
 
 `docs.kind` is `paper` or `slides` and fixes the **mode sequence**: paper =
@@ -334,9 +336,9 @@ python3 ~/.claude/skills/ppread/fetch.py --list <dir>      # any other directory
 Render `papers` as a table — title, kind, year, broad, deep, research — using `✓`
 for `read`, `○` for `unread`, `…` for `partial`, `—` for `absent` or for a mode
 the kind does not have (a paper has no research), and a footnote for rows with
-`legacy: true`. A slides row's `slug` is `<course>/<chapter>`. When `title` is empty (a folder holding only a source file, no
-lecture yet) show the `slug` instead, so the row is still identifiable. Filter or
-sort only as the user asks. Papers built beside local files live outside the
+`legacy: true`. A slides row's `slug` is `<course>/<chapter>`. When `title` is
+empty (a folder holding only a source file, no lecture yet) show the `slug`
+instead, so the row is still identifiable. Filter or sort only as the user asks. Papers built beside local files live outside the
 library; `--list <dir>` reaches them. A `needs-output-config` result means no
 library is set: handle it as in Step 0.
 
