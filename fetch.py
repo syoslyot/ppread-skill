@@ -309,7 +309,7 @@ VERIFY_MAX = 25
 def title_match(query: str) -> dict | None:
     """Semantic Scholar's best title match, or None when it has none. Other
     failures raise, so callers can tell 'no such paper' from 'could not ask'."""
-    path = f"/paper/search/match?query={urllib.parse.quote(query)}&fields=title,year,externalIds"
+    path = f"/paper/search/match?query={urllib.parse.quote(query)}&fields=title,year,externalIds,authors"
     try:
         data = s2_get(path)
     except urllib.error.HTTPError as e:
@@ -327,7 +327,8 @@ def match_status(query: str, rec: dict | None) -> dict:
     if not rec:
         return {"query": query, "status": "not-found"}
     if _norm_title(rec.get("title", "")) == _norm_title(query):
-        return {"query": query, "status": "exact", **s2_ids(rec)}
+        return {"query": query, "status": "exact", **s2_ids(rec),
+                "authors": clean_authors([a.get("name", "") for a in rec.get("authors") or []])}
     return {"query": query, "status": "mismatch", "candidate": rec.get("title") or ""}
 
 
@@ -435,7 +436,8 @@ def search(query: str, since: int | None = None, limit: int = SEARCH_LIMIT) -> d
     except urllib.error.HTTPError as e:
         return {"route": "search-unavailable", "query": query, "reason": f"HTTP {e.code}"}
     except Exception as e:
-        return {"route": "search-unavailable", "query": query, "reason": str(e)}
+        return {"route": "search-unavailable", "query": query,
+                "reason": str(e) or type(e).__name__}
 
     papers = []
     for p in (data.get("data") or [])[:limit]:
@@ -967,6 +969,8 @@ views:
         - 'lecture_read != true'
     order:
       - title
+      - kind
+      - course
       - mode
       - year
       - lecture_read
@@ -974,6 +978,8 @@ views:
     name: 全部講義
     order:
       - title
+      - kind
+      - course
       - mode
       - year
       - lecture_read

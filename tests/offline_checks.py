@@ -73,11 +73,20 @@ def check_clean_authors() -> None:
 
 def check_verify_matching() -> None:
     rec = {"paperId": "p", "title": "Neural Machine Translation by Jointly Learning to Align and Translate",
-           "year": 2014, "externalIds": {"ArXiv": "1409.0473"}}
+           "year": 2014, "externalIds": {"ArXiv": "1409.0473"},
+           "authors": [{"name": "Dzmitry Bahdanau"}, {"name": ":"}]}
     r = fetch.match_status("neural machine translation by jointly learning to align and translate", rec)
     assert r == {"query": "neural machine translation by jointly learning to align and translate",
                  "status": "exact", "title": rec["title"], "year": 2014,
-                 "arxiv": "1409.0473", "doi": ""}, r
+                 "arxiv": "1409.0473", "doi": "", "authors": ["Dzmitry Bahdanau"]}, r
+    calls: list[str] = []
+    orig = fetch.s2_get
+    fetch.s2_get = lambda path: calls.append(path) or {"data": [rec]}
+    try:
+        fetch.title_match("x")
+    finally:
+        fetch.s2_get = orig
+    assert "authors" in calls[0].partition("fields=")[2].split(","), calls
     r = fetch.match_status("Attention Mechanisms Are All You Need for Vision", rec)
     assert r["status"] == "mismatch" and r["candidate"] == rec["title"], r
     assert fetch.match_status("x", None) == {"query": "x", "status": "not-found"}
@@ -242,6 +251,8 @@ def check_papers_base() -> None:
     for needle in ("'type == \"reading\"'", "'generated == \"claude\"'",
                    "'lecture_read != true'", "property: note.mode"):
         assert needle in text, needle
+    for column in ("kind", "course"):
+        assert text.count(f"      - {column}\n") == 2, column  # in both views
     f.write_text("custom\n", "utf-8")
     fetch.ensure_base(lib)
     assert f.read_text("utf-8") == "custom\n"
@@ -558,6 +569,10 @@ def check_search() -> None:
             raise fetch.urllib.error.HTTPError(path, 429, "Too Many Requests", {}, None)
         fetch.s2_get = refuse
         failed = fetch.search("dct")
+        def time_out(path: str) -> dict:
+            raise TimeoutError()
+        fetch.s2_get = time_out
+        timed_out = fetch.search("dct")
     finally:
         fetch.s2_get = orig
 
@@ -579,6 +594,7 @@ def check_search() -> None:
     assert empty == {"route": "search", "query": "nothing matches this", "since": None,
                      "total": 0, "papers": [], "fetched_on": empty["fetched_on"]}, empty
     assert failed == {"route": "search-unavailable", "query": "dct", "reason": "HTTP 429"}, failed
+    assert timed_out["reason"] == "TimeoutError", timed_out  # str() of it is empty
 
 
 CHECKS = [
