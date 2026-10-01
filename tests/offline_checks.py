@@ -30,11 +30,13 @@ def write_doc(path: Path, fields: dict) -> None:
 
 def check_lecture_docs_and_conflicts() -> None:
     d = Path(tempfile.mkdtemp())
-    assert fetch.lecture_docs(d) == {"legacy": False, "broad": "absent", "deep": "absent"}
+    assert fetch.lecture_docs(d) == {"kind": "paper", "legacy": False,
+                                     "broad": "absent", "deep": "absent"}
 
     write_doc(d / "broad.md", {**A, "mode": "broad", "lecture_read": "true"})
     write_doc(d / "deep.part.md", {**A, "mode": "deep", "lecture_read": "false"})
-    assert fetch.lecture_docs(d) == {"legacy": False, "broad": "read", "deep": "partial"}
+    assert fetch.lecture_docs(d) == {"kind": "paper", "legacy": False,
+                                     "broad": "read", "deep": "partial"}
     assert fetch.folder_conflict(d, A_META, "s") is None
     c = fetch.folder_conflict(d, B_META, "s")
     assert c["route"] == "conflict" and c["occupant"]["file"] == "broad.md", c
@@ -47,13 +49,15 @@ def check_lecture_docs_and_conflicts() -> None:
     write_doc(e / "broad.md", {**A, "mode": "broad", "lecture_read": "false"})
     write_doc(e / "deep.md", {"title": "Paper B", "arxiv": "2222.22222",
                               "mode": "deep", "lecture_read": "false"})
-    assert fetch.lecture_docs(e) == {"legacy": False, "broad": "unread", "deep": "unread"}
+    assert fetch.lecture_docs(e) == {"kind": "paper", "legacy": False,
+                                     "broad": "unread", "deep": "unread"}
     c = fetch.folder_conflict(e, A_META, "s")
     assert c and c["occupant"]["file"] == "deep.md", c
 
     f = Path(tempfile.mkdtemp())
     write_doc(f / "lecture.md", A)
-    assert fetch.lecture_docs(f) == {"legacy": True, "broad": "absent", "deep": "absent"}
+    assert fetch.lecture_docs(f) == {"kind": "paper", "legacy": True,
+                                     "broad": "absent", "deep": "absent"}
     assert fetch.folder_conflict(f, A_META, "s") is None
     assert fetch.folder_conflict(f, B_META, "s")["occupant"]["file"] == "lecture.md"
 
@@ -170,13 +174,13 @@ def check_list_library() -> None:
     r = fetch.list_library(lib)
     assert r["route"] == "list" and r["library"] == str(lib)
     assert r["papers"] == [
-        {"slug": "a-read", "title": "Paper A", "year": "2017", "tier": "1",
+        {"slug": "a-read", "kind": "paper", "title": "Paper A", "year": "2017", "tier": "1",
          "broad": "read", "deep": "unread", "legacy": False},
-        {"slug": "b-legacy", "title": "Legacy", "year": "2016", "tier": "6",
+        {"slug": "b-legacy", "kind": "paper", "title": "Legacy", "year": "2016", "tier": "6",
          "broad": "absent", "deep": "absent", "legacy": True},
-        {"slug": "c-source-only", "title": "", "year": "", "tier": "",
+        {"slug": "c-source-only", "kind": "paper", "title": "", "year": "", "tier": "",
          "broad": "absent", "deep": "absent", "legacy": False},
-        {"slug": "d-partial", "title": "Partial", "year": "", "tier": "",
+        {"slug": "d-partial", "kind": "paper", "title": "Partial", "year": "", "tier": "",
          "broad": "partial", "deep": "absent", "legacy": False},
     ], r["papers"]
 
@@ -341,8 +345,50 @@ def check_title_flag_populates_meta() -> None:
     assert out["slug"] == "disambiguator", out
 
 
+S = {"title": "Ch01 Introduction", "course": "VLSI DSP", "kind": "slides"}
+
+
+def check_slides_lecture_state() -> None:
+    d = Path(tempfile.mkdtemp())
+    assert fetch.lecture_docs(d, "slides") == {"kind": "slides", "legacy": False, "broad": "absent",
+                                               "deep": "absent", "research": "absent"}
+    write_doc(d / "broad.md", {**S, "mode": "broad", "lecture_read": "true"})
+    write_doc(d / "research.part.md", {**S, "mode": "research", "lecture_read": "false"})
+    # Kind read back from front matter when the caller does not know it.
+    assert fetch.lecture_docs(d) == {"kind": "slides", "legacy": False, "broad": "read",
+                                     "deep": "absent", "research": "partial"}
+    c = fetch.folder_conflict(d, {"title": "Ch02 Pipelining", "course": "VLSI DSP"}, "s")
+    assert c and c["occupant"]["file"] == "broad.md", c
+
+    # An unknown kind in front matter is ignored, not trusted.
+    e = Path(tempfile.mkdtemp())
+    write_doc(e / "broad.md", {**A, "kind": "poster", "mode": "broad"})
+    assert fetch.lecture_docs(e)["kind"] == "paper"
+
+    # No lecture yet: the source PDF decides.
+    g = Path(tempfile.mkdtemp())
+    (g / "deck.pdf").write_bytes(b"%PDF-1.4\n<< /MediaBox [0 0 720 540] >>\n")
+    orig = fetch.pdfinfo
+    fetch.pdfinfo = lambda p: {}
+    try:
+        assert fetch.lecture_docs(g)["kind"] == "slides"
+    finally:
+        fetch.pdfinfo = orig
+
+
+def check_same_paper_course() -> None:
+    fm = {"title": "Ch01 Introduction", "course": "VLSI DSP"}
+    assert fetch.same_paper(fm, {"title": "Ch01 Introduction", "course": "vlsi-dsp"})
+    assert not fetch.same_paper(fm, {"title": "Ch01 Introduction", "course": "Computer Architecture"})
+    assert fetch.same_paper(fm, {"title": "Ch01 Introduction"})
+    assert fetch.same_paper({"title": "Ch01 Introduction"},
+                            {"title": "ch01 introduction", "course": "VLSI DSP"})
+
+
 CHECKS = [
     check_lecture_docs_and_conflicts,
+    check_slides_lecture_state,
+    check_same_paper_course,
     check_resolve_slug,
     check_main_needs_title_on_metadata_failure,
     check_title_flag_populates_meta,

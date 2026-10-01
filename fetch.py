@@ -608,7 +608,9 @@ def pdf_kind(path: Path, info: dict | None = None) -> str:
 # paper than the source lying next to it, and nothing in either file says so.
 
 
-DOC_FILES = ("broad.md", "deep.md", "broad.part.md", "deep.part.md", "lecture.md")
+DOC_FILES = ("broad.md", "deep.md", "research.md", "broad.part.md", "deep.part.md",
+             "research.part.md", "lecture.md")
+MODES = {"paper": ("broad", "deep"), "slides": ("broad", "deep", "research")}
 
 
 def front_matter(f: Path) -> dict | None:
@@ -634,13 +636,30 @@ def front_matter(f: Path) -> dict | None:
     return fields
 
 
-def lecture_docs(workdir: Path) -> dict:
+def doc_kind(workdir: Path) -> str:
+    """The kind a lecture in this folder records, '' when none records a known one."""
+    for name in DOC_FILES:
+        kind = (front_matter(workdir / name) or {}).get("kind", "")
+        if kind in MODES:
+            return kind
+    return ""
+
+
+def source_kind(workdir: Path) -> str:
+    """For a folder with no lecture yet: slides if any PDF in it is landscape."""
+    return "slides" if any(pdf_kind(p) == "slides" for p in sorted(workdir.glob("*.pdf"))) else "paper"
+
+
+def lecture_docs(workdir: Path, kind: str = "") -> dict:
     """Which lectures a folder holds and how far each has got. A lecture is written
     as <mode>.part.md and renamed only once its last section is done, so a .part
     file means unfinished even when a finished file of that mode also exists — a
-    regeneration in progress is not done."""
-    docs = {"legacy": (workdir / "lecture.md").is_file()}
-    for mode in ("broad", "deep"):
+    regeneration in progress is not done. Which modes exist depends on the kind:
+    a caller that already decided it passes it, otherwise the folder says."""
+    if kind not in MODES:
+        kind = doc_kind(workdir) or source_kind(workdir)
+    docs = {"kind": kind, "legacy": (workdir / "lecture.md").is_file()}
+    for mode in MODES[kind]:
         if (workdir / f"{mode}.part.md").is_file():
             docs[mode] = "partial"
             continue
@@ -661,9 +680,14 @@ def _norm_title(v: str) -> str:
 
 
 def same_paper(ident: dict, meta: dict) -> bool:
-    """Strongest available identifier wins. An arXiv id or a DOI settles it
-    outright; only when one side lacks both does the comparison fall back to the
-    title, normalised so that casing and punctuation do not fake a conflict."""
+    """Strongest available identifier wins, within one course: two decks share
+    a chapter title far more often than two papers share a title, so differing
+    courses settle it first. An arXiv id or a DOI settles it outright; only when
+    one side lacks both does the comparison fall back to the title, normalised so
+    that casing and punctuation do not fake a conflict."""
+    c1, c2 = _norm_title(ident.get("course", "")), _norm_title(meta.get("course", ""))
+    if c1 and c2 and c1 != c2:
+        return False
     a1, a2 = _norm_arxiv(ident.get("arxiv", "")), _norm_arxiv(meta.get("arxiv_id", ""))
     if a1 and a2:
         return a1 == a2
@@ -798,7 +822,7 @@ def list_library(root: Path) -> dict:
             continue
         fields = next((fm for fm in (front_matter(d / n) for n in DOC_FILES) if fm), {})
         docs = lecture_docs(d)
-        papers.append({"slug": d.name, "title": fields.get("title", ""),
+        papers.append({"slug": d.name, "kind": docs["kind"], "title": fields.get("title", ""),
                        "year": fields.get("year", ""), "tier": fields.get("tier", ""),
                        "broad": docs["broad"], "deep": docs["deep"],
                        "legacy": docs["legacy"]})
