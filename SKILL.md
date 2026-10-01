@@ -1,9 +1,9 @@
 ---
 name: ppread
-description: "Bilingual research-paper lectures in two modes — invoke with /ppread [--broad | --deep] <arXiv ID | DOI | URL | title | PDF path>, or /ppread --list [dir]. --broad writes broad.md: the abstract, introduction and conclusion paragraph by paragraph (English original, Traditional Chinese translation, explanation), the outside knowledge the paper assumes and how deep to go, a quick pass over the core method, and the paper's place in the literature grounded in the Semantic Scholar citation graph. --deep writes deep.md: the whole paper paragraph by paragraph with critical analysis, a claims-versus-evidence table and a design-decision breakdown. Both end with reader questions and folded reference answers. Fetches the highest-fidelity full text available (arXiv LaTeX first). --list shows every paper's lectures and whether each has been read. Stops at the lecture and never writes the user's own notes."
+description: "Bilingual lectures from research papers and course slides — invoke with /ppread [--broad | --deep | --research] <arXiv ID | DOI | URL | title | PDF path>, or /ppread --list [dir]. Papers: --broad writes broad.md (abstract, introduction and conclusion paragraph by paragraph — English original, Traditional Chinese translation, explanation — the outside knowledge the paper assumes, a quick pass over the core method, and its place in the literature from the Semantic Scholar citation graph); --deep writes deep.md (the whole paper with critical analysis, a claims-versus-evidence table and design decisions). Course slides (a landscape PDF lecture deck, often carrying the student's own annotations): --broad maps the chapter and explains every technical term in both languages; --deep works through each technical unit with filled-in derivations, worked examples and a check of the student's notes; --research links the chapter's topics to foundational and recent papers found through Semantic Scholar search. Every lecture ends with questions and folded reference answers. --list shows every paper's and chapter's lectures and whether each has been read. Stops at the lecture and never writes the user's own notes."
 ---
 
-# /ppread — Paper Lectures, Broad and Deep
+# /ppread — Lectures from Papers and Course Slides
 
 Turn one paper into a lecture the user can read straight through. There are two
 kinds, written to two files, for two different jobs:
@@ -12,6 +12,10 @@ kinds, written to two files, for two different jobs:
   its core idea is, where it sits among other work, what to read next.
 - **deep** (`deep.md`) — judge the paper: does the argument hold, why was each
   design decision made, does the evidence carry the claims.
+
+A local PDF can also be a **course slide deck**. Slides get three lectures —
+broad, deep and research — and their own workflow in `slides.md`; Step 0 below
+says when to switch to it.
 
 Fetching and every other step with a right answer lives in `fetch.py`; reading,
 translating, explaining and questioning are judgment and live here.
@@ -23,13 +27,17 @@ translating, explaining and questioning are judgment and live here.
 | `/ppread <source>` | Picks the mode from what already exists (table in Step 0) |
 | `/ppread --broad <source>` | Broad lecture |
 | `/ppread --deep <source>` | Deep lecture |
+| `/ppread --research <slides PDF>` | Research lecture — slides only |
 | `/ppread --list [dir]` | Lists papers and lecture state — see "Listing" |
 
 `<source>` may be an arXiv ID or URL, a DOI, a publisher URL, a paper title, or a
 local PDF path. The mode is a flag, never a bare word: a title such as
 `deep residual learning for image recognition` would otherwise lose its first word
-to the mode and resolve to the wrong paper. Strip `--broad`/`--deep` before passing
-the source to `fetch.py`; `fetch.py` does not accept them.
+to the mode and resolve to the wrong paper. Strip `--broad`/`--deep`/`--research` before passing the source to `fetch.py`;
+`fetch.py` does not accept them. `--research` exists only for slides: on a paper,
+say that a paper's broad lecture already places it in the literature, and stop.
+`--kind` and `--course` are `fetch.py` flags you add yourself when Step 0 asks for
+them; the user never types them.
 
 ## Step 0: Fetch and choose the mode
 
@@ -50,11 +58,12 @@ The script prints one JSON object. Read `route` and act:
 |---|---|---|
 | `latex` | arXiv source obtained (tier 1) | Read `source_path`. This is the good case. |
 | `needs-html` | No LaTeX; an HTML full text may exist | Fetch `html_url` (or `page_url`) with Firecrawl `firecrawl_scrape`. |
-| `needs-pdf` | Only a PDF exists | Convert to text — see "The PDF route" below. |
+| `needs-pdf` | Only a PDF exists | Paper: convert to text — see "The PDF route" below. **Slides** (`docs.kind: slides`): do not convert — `slides.md` reads the pages as images. |
 | `unresolved` | Nothing identified the reference | Stop. Tell the user what was tried and ask for an arXiv ID, a DOI, or a direct URL. Do not guess at which paper was meant. |
 | `needs-output-config` | No output location has ever been chosen | Ask (see below), save the answer, re-run Step 0. |
 | `conflict` | The folder this paper wants already holds a lecture for another paper | Stop and ask the user — see "When two papers want one folder". Nothing was downloaded or moved. |
-| `needs-title` | Local file: its metadata has no title, or a title with no ASCII in it. Network: metadata lookup returned no title, or the title it returned has no ASCII in it | **Local**: read its first page (`pdftotext -f 1 -l 1 <file> -`), take the **English** title — a paper written in another language usually prints one on page 1; translate it if it does not — and re-run with `--title "<title>"`. The file was **not** moved. **Network**: check `reason` — a metadata lookup failure is often transient (the same call can succeed a minute later), so **retry the fetch once, unchanged, before asking the user for a title**; only if it still comes back `needs-title` should you ask the user for the paper's English title and re-run with `--title "<title>"`. Nothing was downloaded or created. |
+| `needs-title` | Local file: its metadata has no title, or a title with no ASCII in it. Network: metadata lookup returned no title, or the title it returned has no ASCII in it | **Slides** (`meta.kind: slides`): `reason` names what is missing — see "Naming: course and chapter" in `slides.md`. The file was **not** moved. Otherwise: **Local**: read its first page (`pdftotext -f 1 -l 1 <file> -`), take the **English** title — a paper written in another language usually prints one on page 1; translate it if it does not — and re-run with `--title "<title>"`. The file was **not** moved. **Network**: check `reason` — a metadata lookup failure is often transient (the same call can succeed a minute later), so **retry the fetch once, unchanged, before asking the user for a title**; only if it still comes back `needs-title` should you ask the user for the paper's English title and re-run with `--title "<title>"`. Nothing was downloaded or created. |
+| `needs-kind` | Local PDF whose page size could not be read, so paper vs. slides is unknown | Look at page 1 (Read with `pages: "1"`). Landscape lecture slides → re-run with `--kind slides`; otherwise `--kind paper`. The file was **not** moved. |
 | `local` | A local non-PDF source (e.g. `.tex`) already in place | Read `source_path` directly. |
 
 ### Choosing the mode
@@ -65,16 +74,17 @@ Every non-conflict route that has a `workdir` also carries `docs`:
 "docs": {"broad": "read", "deep": "absent", "legacy": false}
 ```
 
-`broad`/`deep` are each `absent`, `partial` (being written, or interrupted),
-`unread` or `read`. A mode is **finished** when its state is `unread` or `read`;
-`absent` and `partial` are not finished. The table below is illustrative only —
-it does not cover every reachable combination (in particular it has no row for
-`partial`). The rule that actually decides, and that covers all sixteen
-combinations, is:
+`docs.kind` is `paper` or `slides` and fixes the **mode sequence**: paper =
+broad, deep; slides = broad, deep, research. `docs` carries one state per mode in
+the sequence, each `absent`, `partial` (being written, or interrupted), `unread`
+or `read`. A mode is **finished** when its state is `unread` or `read`; `absent`
+and `partial` are not finished. The table below is illustrative only and covers
+papers; the rule that actually decides, for every combination of either kind, is:
 
-1. **No flag**: the mode to act on is the first of broad, then deep, that is not
-   finished. If both are finished, stop and report both paths.
-2. **`--broad` or `--deep`**: the named mode is the mode to act on.
+1. **No flag**: the mode to act on is the first in the sequence that is not
+   finished. If all are finished, stop and report every path.
+2. **`--broad`, `--deep` or `--research`**: the named mode is the mode to act on
+   (`--research` on a paper: see Invocation).
 3. Whatever mode was selected by 1 or 2: `absent` → write it; `partial` → ask
    the user whether to resume or restart (see the bullet below); finished →
    report the file's path and stop.
@@ -193,6 +203,12 @@ folder yourself at `workdir`.
 **Report the tier to the user before starting**, in one line — tier 1 means
 formulas and citations are exact; tier 5–6 means they were reconstructed from a
 PDF and may be wrong.
+
+## Slides: switch to slides.md
+
+When Step 0's `docs.kind` is `slides`, read `slides.md` (same directory) and
+follow its Steps 1–4 **in place of** Steps 1–4 below. Step 5, Listing and
+Discipline in this file still apply in full.
 
 ## Step 1: Survey before writing
 
@@ -315,9 +331,10 @@ python3 ~/.claude/skills/ppread/fetch.py --list            # the configured libr
 python3 ~/.claude/skills/ppread/fetch.py --list <dir>      # any other directory
 ```
 
-Render `papers` as a table — title, year, broad, deep — using `✓` for `read`, `○`
-for `unread`, `…` for `partial`, `—` for `absent`, and a footnote for rows with
-`legacy: true`. When `title` is empty (a folder holding only a source file, no
+Render `papers` as a table — title, kind, year, broad, deep, research — using `✓`
+for `read`, `○` for `unread`, `…` for `partial`, `—` for `absent` or for a mode
+the kind does not have (a paper has no research), and a footnote for rows with
+`legacy: true`. A slides row's `slug` is `<course>/<chapter>`. When `title` is empty (a folder holding only a source file, no
 lecture yet) show the `slug` instead, so the row is still identifiable. Filter or
 sort only as the user asks. Papers built beside local files live outside the
 library; `--list <dir>` reaches them. A `needs-output-config` result means no
