@@ -396,6 +396,106 @@ def check_same_paper_course() -> None:
                             {"title": "ch01 introduction", "course": "VLSI DSP"})
 
 
+DECK_INFO = {"Page size": "720 x 540 pts", "Pages": "79", "Title": "Slide 1",
+             "CreationDate": "Wed Sep 16 15:42:45 2026 CST"}
+
+
+def _adopt(src: Path, info: dict, out: Path | None = None, title: str = "",
+           kind: str = "", course: str = "") -> dict:
+    orig = fetch.pdfinfo
+    fetch.pdfinfo = lambda p: info
+    try:
+        return fetch.adopt_local(src, out, title, kind, course)
+    finally:
+        fetch.pdfinfo = orig
+
+
+def check_adopt_slides() -> None:
+    root = Path(tempfile.mkdtemp())
+    src = root / "VLSI_Design_1_Introduction.pdf"
+    src.write_bytes(b"%PDF-1.4\n")
+
+    r = _adopt(src, DECK_INFO)
+    assert r["route"] == "needs-title" and r["reason"].startswith("slides need --course and --title"), r
+    assert r["meta"]["title"] == "", r  # "Slide 1" from metadata is not trusted
+    assert src.exists()
+    r = _adopt(src, DECK_INFO, course="VLSI DSP")
+    assert r["reason"].startswith("slides need --title:"), r
+
+    r = _adopt(src, DECK_INFO, course="VLSI DSP", title="Ch01 Introduction")
+    wd = root / "vlsi-dsp" / "ch01-introduction"
+    assert r["route"] == "needs-pdf" and r["workdir"] == str(wd) and r["tier"] == 6, r
+    assert r["slug"] == "ch01-introduction"
+    assert r["meta"] == {"kind": "slides", "title": "Ch01 Introduction", "course": "VLSI DSP",
+                         "authors": [], "year": "2026", "pages": 79, "input": str(src)}, r["meta"]
+    assert r["docs"] == {"kind": "slides", "legacy": False, "broad": "absent",
+                         "deep": "absent", "research": "absent"}, r["docs"]
+    moved = wd / src.name
+    assert moved.exists() and not src.exists()
+
+    # Re-run on the moved file: same folder, no nesting.
+    r = _adopt(moved, DECK_INFO, course="VLSI DSP", title="Ch01 Introduction")
+    assert r["workdir"] == str(wd) and moved.exists(), r
+
+    # PDF already inside the course folder: only the chapter level is created.
+    src2 = root / "vlsi-dsp" / "ch2.pdf"
+    src2.write_bytes(b"%PDF-1.4\n")
+    r = _adopt(src2, DECK_INFO, course="VLSI DSP", title="Ch02 Pipelining")
+    assert r["workdir"] == str(root / "vlsi-dsp" / "ch02-pipelining"), r
+
+    out = Path(tempfile.mkdtemp())
+    src3 = root / "ch3.pdf"
+    src3.write_bytes(b"%PDF-1.4\n")
+    r = _adopt(src3, DECK_INFO, out=out, course="VLSI DSP", title="Ch03 Retiming")
+    assert r["workdir"] == str(out / "vlsi-dsp" / "ch03-retiming"), r
+
+    src4 = root / "ch4.pdf"
+    src4.write_bytes(b"%PDF-1.4\n")
+    r = _adopt(src4, DECK_INFO, course="超大型積體電路", title="Ch04")
+    assert r["route"] == "needs-title" and "no ASCII" in r["reason"] and src4.exists(), r
+
+
+def check_adopt_kind() -> None:
+    root = Path(tempfile.mkdtemp())
+    src = root / "unknown.pdf"
+    src.write_bytes(b"%PDF-1.4\n")
+
+    r = _adopt(src, {})
+    assert r["route"] == "needs-kind" and src.exists(), r
+
+    # --kind forces slides on a deck whose size could not be read.
+    r = _adopt(src, {}, title="Ch01 Intro", kind="slides", course="Course")
+    assert r["route"] == "needs-pdf" and r["docs"]["kind"] == "slides", r
+    wd = Path(r["workdir"])
+
+    # Once a lecture records kind: slides, a re-run without --kind stays put.
+    write_doc(wd / "broad.md", {"kind": "slides", "title": "Ch01 Intro", "course": "Course",
+                                "mode": "broad", "lecture_read": "false"})
+    portrait = {"Page size": "612 x 792 pts", "Title": "Something Else"}
+    r = _adopt(wd / "unknown.pdf", portrait, title="Ch01 Intro", course="Course")
+    assert r["workdir"] == str(wd) and r["docs"]["kind"] == "slides", r
+    assert (wd / "unknown.pdf").exists()
+
+    # A portrait PDF with a title is still a paper, beside the file.
+    p = root / "paper.pdf"
+    p.write_bytes(b"%PDF-1.4\n")
+    r = _adopt(p, {"Page size": "612 x 792 pts", "Title": "A Paper Title"})
+    assert r["workdir"] == str(root / "a-paper-title") and r["meta"]["kind"] == "paper", r
+    assert r["docs"]["kind"] == "paper" and "research" not in r["docs"], r
+
+
+def check_kind_flags_rejected_on_network_source() -> None:
+    orig_argv, orig_stdout = sys.argv, sys.stdout
+    for extra in (["--kind", "slides"], ["--course", "VLSI DSP"]):
+        sys.argv = ["fetch.py", "1706.03762", *extra]
+        sys.stdout = io.StringIO()
+        try:
+            rc = fetch.main()
+        finally:
+            sys.stdout, sys.argv = orig_stdout, orig_argv
+        assert rc == 2, extra
+
+
 CHECKS = [
     check_lecture_docs_and_conflicts,
     check_slides_lecture_state,
@@ -412,6 +512,9 @@ CHECKS = [
     check_list_library_unreadable_dir,
     check_papers_base,
     check_pdf_kind,
+    check_adopt_slides,
+    check_adopt_kind,
+    check_kind_flags_rejected_on_network_source,
 ]
 
 if __name__ == "__main__":

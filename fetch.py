@@ -732,18 +732,35 @@ def folder_conflict(workdir: Path, meta: dict, slug: str) -> dict | None:
     return None
 
 
-def adopt_local(src: Path, out_override: Path | None, title_override: str) -> dict:
+def adopt_local(src: Path, out_override: Path | None, title_override: str,
+                kind_override: str = "", course: str = "") -> dict:
     """Give a local file the same shape every other route produces: one folder per
     paper, holding the source and (later) the lecture. The folder is created BESIDE
     the file: the file already sits where the user put it, and hauling it off to the
     configured library would relocate something nobody asked to have moved. Into
     that folder the file is MOVED, not copied — two copies of a 10 MB thesis in the
-    same tree is not a library."""
-    title, author, year = pdf_title(src)
+    same tree is not a library.
+
+    The kind is decided before anything else, because it decides the folder's
+    shape. A lecture already beside the file outranks the page size: a portrait
+    deck adopted with --kind slides must not turn back into a paper on a re-run
+    and be moved into a second, nested folder."""
+    is_pdf = src.suffix.lower() == ".pdf"
+    info = pdfinfo(src) if is_pdf else {}
+    kind = kind_override or doc_kind(src.parent) or (pdf_kind(src, info) if is_pdf else "paper")
+    if not kind:
+        return {"route": "needs-kind", "path": str(src),
+                "reason": "the page size could not be read, so it is unknown whether "
+                          "this PDF is a paper or slides; look at its first page, then "
+                          "re-run with --kind paper or --kind slides"}
+    if kind == "slides":
+        return adopt_slides(src, out_override, title_override, course, info)
+
+    title, author, year = pdf_title(src, info)
     if title_override:
         title = title_override
-    meta = {"title": title, "authors": [author] if author else [], "year": year,
-            "doi": "", "arxiv_id": "", "abstract": "", "venue": "",
+    meta = {"kind": "paper", "title": title, "authors": [author] if author else [],
+            "year": year, "doi": "", "arxiv_id": "", "abstract": "", "venue": "",
             "input": str(src)}
 
     if not title:
@@ -768,6 +785,44 @@ def adopt_local(src: Path, out_override: Path | None, title_override: str) -> di
         workdir = src.parent
     else:
         workdir = src.parent / slug
+    return place(src, workdir, meta, slug, "paper")
+
+
+def adopt_slides(src: Path, out_override: Path | None, title: str, course: str,
+                 info: dict) -> dict:
+    """Slides go under <course>/<chapter>/ so a course's chapters sit together.
+    Both names come from the agent, read off the cover and the running headers:
+    deck exports carry /Title values like "Slide 1" or "PowerPoint Presentation",
+    and trusting one would mint a wrong folder name with nothing to flag it."""
+    pages = info.get("Pages", "")
+    meta = {"kind": "slides", "title": title, "course": course, "authors": [],
+            "year": pdf_title(src, info)[2], "pages": int(pages) if pages.isdigit() else 0,
+            "input": str(src)}
+    missing = [flag for flag, value in (("--course", course), ("--title", title)) if not value]
+    if missing:
+        return {"route": "needs-title", "meta": meta, "path": str(src),
+                "reason": f"slides need {' and '.join(missing)}: read the cover and the "
+                          "running headers and footers, then re-run with --kind slides "
+                          "--course \"<course>\" --title \"Ch<NN> <chapter title>\""}
+    course_slug, slug = slugify(course, ""), slugify(title, "")
+    if not course_slug or not slug:
+        return {"route": "needs-title", "meta": meta, "path": str(src),
+                "reason": "the course or the title leaves no ASCII characters to name "
+                          "a folder with; re-run with the English --course and --title"}
+
+    if out_override is not None:
+        workdir = out_override / course_slug / slug
+    elif src.parent.name == slug and src.parent.parent.name == course_slug:
+        workdir = src.parent
+    elif src.parent.name == course_slug:
+        workdir = src.parent / slug
+    else:
+        workdir = src.parent / course_slug / slug
+    return place(src, workdir, meta, slug, "slides")
+
+
+def place(src: Path, workdir: Path, meta: dict, slug: str, kind: str) -> dict:
+    """Move a local source into its folder, after proving the folder is its own."""
     dest = workdir / src.name
 
     conflict = folder_conflict(workdir, meta, slug)
@@ -800,7 +855,7 @@ def adopt_local(src: Path, out_override: Path | None, title_override: str) -> di
 
     ext = dest.suffix.lower()
     return {"slug": slug, "workdir": str(workdir), "meta": meta,
-            "docs": lecture_docs(workdir),
+            "docs": lecture_docs(workdir, kind),
             "route": "needs-pdf" if ext == ".pdf" else "local",
             "tier": 6 if ext == ".pdf" else 1,
             "pdf_path": str(dest) if ext == ".pdf" else "",
@@ -943,6 +998,12 @@ def main() -> int:
                          "name. Needed for a local file whose metadata has no title "
                          "or no ASCII in it, and to separate two papers whose titles "
                          "land on the same folder")
+    ap.add_argument("--kind", choices=("paper", "slides"),
+                    help="local PDF only: force the kind when the page size cannot be "
+                         "read or misleads (a portrait slide deck)")
+    ap.add_argument("--course", default=None,
+                    help="local slides only: the course name; with --title it names "
+                         "the <course>/<chapter> folder")
     ap.add_argument("--show-config", action="store_true",
                     help="print the remembered output location and exit")
     ap.add_argument("--keep-comments", action="store_true",
@@ -1013,9 +1074,14 @@ def main() -> int:
     # this route never has to ask the library question below.
     if kind == "file":
         override = Path(args.out).expanduser() if args.out else None
-        result = adopt_local(Path(value), override, args.title or "")
+        result = adopt_local(Path(value), override, args.title or "",
+                             args.kind or "", args.course or "")
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
+
+    if args.kind or args.course:
+        log("--kind and --course apply to a local PDF only; a network source is always a paper")
+        return 2
 
     # Gate before any network call or mkdir: never download into a directory the
     # user has not agreed to.
@@ -1092,7 +1158,7 @@ def main() -> int:
         return 0
 
     result = {"slug": slug, "workdir": str(workdir), "meta": meta,
-              "docs": lecture_docs(workdir)}
+              "docs": lecture_docs(workdir, "paper")}
 
     if meta["arxiv_id"]:
         workdir.mkdir(parents=True, exist_ok=True)
