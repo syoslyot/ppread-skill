@@ -700,6 +700,13 @@ def check_user_notes_are_not_lectures() -> None:
     write_doc(d / "broad.md", {**A, "mode": "broad"})
     assert fetch.folder_conflict(d, A_META, "s") is None
     assert fetch.library_row(d, "s")["title"] == "Paper A"
+    # The user's own notes.md beside an adopted source is not a rival source.
+    pd = Path(tempfile.mkdtemp()) / "paper-a"
+    write_doc(pd / "broad.md", {**A, "mode": "broad"})
+    (pd / "paper.pdf").write_bytes(b"%PDF-1.4\n")
+    (pd / "notes.md").write_text("mine\n", "utf-8")
+    r = _adopt(pd / "paper.pdf", {"Page size": "612 x 792 pts"}, title="Paper A")
+    assert r["route"] == "needs-pdf" and r["workdir"] == str(pd), r
 
     root = Path(tempfile.mkdtemp())
     src = root / "deck.pdf"

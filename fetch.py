@@ -809,8 +809,11 @@ def adopt_local(src: Path, out_override: Path | None, title_override: str,
     # A lecture speaks for the folder's one source. A second file beside it is not
     # that document, and letting the lecture claim it would write a chapter's
     # deep.md from a downloaded paper, or nest a talk deck inside a paper.
-    others = sorted(p.name for p in src.parent.glob("*") if p.is_file() and p != src
-                    and p.name not in DOC_FILES and not p.name.startswith(".")) if recorded else []
+    # Only files of the source's own type are rivals: the user's notes.md or a
+    # supplement beside a lecture are not a second document.
+    others = sorted(p.name for p in src.parent.glob(f"*{src.suffix}") if p.is_file()
+                    and p != src and p.name not in DOC_FILES
+                    and not p.name.startswith(".")) if recorded else []
     if others:
         return {"route": "conflict", "workdir": str(src.parent), "path": str(src),
                 "reason": f"{src.parent} already holds a {recorded} lecture and its "
