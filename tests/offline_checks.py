@@ -30,11 +30,13 @@ def write_doc(path: Path, fields: dict) -> None:
 
 def check_lecture_docs_and_conflicts() -> None:
     d = Path(tempfile.mkdtemp())
-    assert fetch.lecture_docs(d) == {"legacy": False, "broad": "absent", "deep": "absent"}
+    assert fetch.lecture_docs(d) == {"kind": "paper", "legacy": False,
+                                     "broad": "absent", "deep": "absent"}
 
     write_doc(d / "broad.md", {**A, "mode": "broad", "lecture_read": "true"})
     write_doc(d / "deep.part.md", {**A, "mode": "deep", "lecture_read": "false"})
-    assert fetch.lecture_docs(d) == {"legacy": False, "broad": "read", "deep": "partial"}
+    assert fetch.lecture_docs(d) == {"kind": "paper", "legacy": False,
+                                     "broad": "read", "deep": "partial"}
     assert fetch.folder_conflict(d, A_META, "s") is None
     c = fetch.folder_conflict(d, B_META, "s")
     assert c["route"] == "conflict" and c["occupant"]["file"] == "broad.md", c
@@ -47,13 +49,15 @@ def check_lecture_docs_and_conflicts() -> None:
     write_doc(e / "broad.md", {**A, "mode": "broad", "lecture_read": "false"})
     write_doc(e / "deep.md", {"title": "Paper B", "arxiv": "2222.22222",
                               "mode": "deep", "lecture_read": "false"})
-    assert fetch.lecture_docs(e) == {"legacy": False, "broad": "unread", "deep": "unread"}
+    assert fetch.lecture_docs(e) == {"kind": "paper", "legacy": False,
+                                     "broad": "unread", "deep": "unread"}
     c = fetch.folder_conflict(e, A_META, "s")
     assert c and c["occupant"]["file"] == "deep.md", c
 
     f = Path(tempfile.mkdtemp())
     write_doc(f / "lecture.md", A)
-    assert fetch.lecture_docs(f) == {"legacy": True, "broad": "absent", "deep": "absent"}
+    assert fetch.lecture_docs(f) == {"kind": "paper", "legacy": True,
+                                     "broad": "absent", "deep": "absent"}
     assert fetch.folder_conflict(f, A_META, "s") is None
     assert fetch.folder_conflict(f, B_META, "s")["occupant"]["file"] == "lecture.md"
 
@@ -69,11 +73,20 @@ def check_clean_authors() -> None:
 
 def check_verify_matching() -> None:
     rec = {"paperId": "p", "title": "Neural Machine Translation by Jointly Learning to Align and Translate",
-           "year": 2014, "externalIds": {"ArXiv": "1409.0473"}}
+           "year": 2014, "externalIds": {"ArXiv": "1409.0473"},
+           "authors": [{"name": "Dzmitry Bahdanau"}, {"name": ":"}]}
     r = fetch.match_status("neural machine translation by jointly learning to align and translate", rec)
     assert r == {"query": "neural machine translation by jointly learning to align and translate",
                  "status": "exact", "title": rec["title"], "year": 2014,
-                 "arxiv": "1409.0473", "doi": ""}, r
+                 "arxiv": "1409.0473", "doi": "", "authors": ["Dzmitry Bahdanau"]}, r
+    calls: list[str] = []
+    orig = fetch.s2_get
+    fetch.s2_get = lambda path: calls.append(path) or {"data": [rec]}
+    try:
+        fetch.title_match("x")
+    finally:
+        fetch.s2_get = orig
+    assert "authors" in calls[0].partition("fields=")[2].split(","), calls
     r = fetch.match_status("Attention Mechanisms Are All You Need for Vision", rec)
     assert r["status"] == "mismatch" and r["candidate"] == rec["title"], r
     assert fetch.match_status("x", None) == {"query": "x", "status": "not-found"}
@@ -152,6 +165,17 @@ def check_graph() -> None:
     assert fetch.graph(__file__)["route"] == "graph-unavailable"
 
 
+def check_graph_authors() -> None:
+    """A lecture cites outside papers as "<first author> et al. (<year>)" from
+    fetch.py output alone, so graph nodes must carry authors like search results do."""
+    edge = {"citingPaper": {"title": "c", "year": 2021, "externalIds": {}, "citationCount": 3,
+                            "authors": [{"name": "H. T. Kung"}, {"name": ":"}]},
+            "isInfluential": False, "intents": []}
+    assert "authors" in fetch.GRAPH_FIELDS.split(","), fetch.GRAPH_FIELDS
+    assert fetch.graph_node(edge, "citingPaper")["authors"] == ["H. T. Kung"]
+    assert fetch.graph_node({"citedPaper": {"title": "r"}}, "citedPaper")["authors"] == []
+
+
 def check_list_library() -> None:
     lib = Path(tempfile.mkdtemp())
     write_doc(lib / "a-read" / "broad.md",
@@ -166,18 +190,27 @@ def check_list_library() -> None:
     (lib / ".obsidian").mkdir()
     (lib / ".obsidian" / "app.json").write_text("{}", "utf-8")
     (lib / "papers.base").write_text("", "utf-8")
+    (lib / "assets" / "a-read" / "fig.png").write_bytes(b"png")
+    write_doc(lib / "vlsi-dsp" / "ch01-introduction" / "broad.md",
+              {"kind": "slides", "title": "Ch01 Introduction", "course": "VLSI DSP",
+               "year": "2026", "tier": "6", "mode": "broad", "lecture_read": "false"})
+    (lib / "vlsi-dsp" / ".DS_Store").write_bytes(b"\0")  # must not turn the course into a row
+    (lib / "empty-course").mkdir()
 
     r = fetch.list_library(lib)
     assert r["route"] == "list" and r["library"] == str(lib)
     assert r["papers"] == [
-        {"slug": "a-read", "title": "Paper A", "year": "2017", "tier": "1",
+        {"slug": "a-read", "kind": "paper", "title": "Paper A", "year": "2017", "tier": "1",
          "broad": "read", "deep": "unread", "legacy": False},
-        {"slug": "b-legacy", "title": "Legacy", "year": "2016", "tier": "6",
+        {"slug": "b-legacy", "kind": "paper", "title": "Legacy", "year": "2016", "tier": "6",
          "broad": "absent", "deep": "absent", "legacy": True},
-        {"slug": "c-source-only", "title": "", "year": "", "tier": "",
+        {"slug": "c-source-only", "kind": "paper", "title": "", "year": "", "tier": "",
          "broad": "absent", "deep": "absent", "legacy": False},
-        {"slug": "d-partial", "title": "Partial", "year": "", "tier": "",
+        {"slug": "d-partial", "kind": "paper", "title": "Partial", "year": "", "tier": "",
          "broad": "partial", "deep": "absent", "legacy": False},
+        {"slug": "vlsi-dsp/ch01-introduction", "kind": "slides", "title": "Ch01 Introduction",
+         "year": "2026", "tier": "6", "broad": "unread", "deep": "absent",
+         "research": "absent", "legacy": False},
     ], r["papers"]
 
     assert fetch.list_library(lib / "nope") == {"route": "list", "library": str(lib / "nope"),
@@ -218,9 +251,40 @@ def check_papers_base() -> None:
     for needle in ("'type == \"reading\"'", "'generated == \"claude\"'",
                    "'lecture_read != true'", "property: note.mode"):
         assert needle in text, needle
+    for column in ("kind", "course"):
+        assert text.count(f"      - {column}\n") == 2, column  # in both views
     f.write_text("custom\n", "utf-8")
     fetch.ensure_base(lib)
     assert f.read_text("utf-8") == "custom\n"
+
+
+def check_pdf_kind() -> None:
+    d = Path(tempfile.mkdtemp())
+    f = d / "x.pdf"
+    f.write_bytes(b"%PDF-1.4\n")
+    orig = fetch.pdfinfo
+    try:
+        fetch.pdfinfo = lambda p: {"Page size": "720 x 540 pts", "Page rot": "0"}
+        assert fetch.pdf_kind(f) == "slides"
+        fetch.pdfinfo = lambda p: {"Page size": "595.276 x 841.89 pts (A4)", "Page rot": "0"}
+        assert fetch.pdf_kind(f) == "paper"
+        # Rotated portrait page displays landscape.
+        fetch.pdfinfo = lambda p: {"Page size": "612 x 792 pts (letter)", "Page rot": "90"}
+        assert fetch.pdf_kind(f) == "slides"
+        # No pdfinfo: fall back to the first /MediaBox in the raw bytes.
+        fetch.pdfinfo = lambda p: {}
+        f.write_bytes(b"%PDF-1.4\n1 0 obj\n<< /Type /Page /MediaBox [ 0 0 960 540 ] >>\nendobj\n")
+        assert fetch.pdf_kind(f) == "slides"
+        f.write_bytes(b"%PDF-1.4\n1 0 obj\n<< /Type /Page /MediaBox [0 0 612 792] >>\nendobj\n")
+        assert fetch.pdf_kind(f) == "paper"
+        # MediaBox hidden in a compressed object stream: undecidable.
+        f.write_bytes(b"%PDF-1.5\n1 0 obj\n<< /Type /ObjStm /Filter /FlateDecode >>\nendobj\n")
+        assert fetch.pdf_kind(f) == ""
+        assert fetch.pdf_kind(d / "missing.pdf") == ""
+    finally:
+        fetch.pdfinfo = orig
+    # An explicit info dict is used as-is.
+    assert fetch.pdf_kind(f, {"Page size": "720 x 540 pts"}) == "slides"
 
 
 def check_slugify_length() -> None:
@@ -312,8 +376,358 @@ def check_title_flag_populates_meta() -> None:
     assert out["slug"] == "disambiguator", out
 
 
+S = {"title": "Ch01 Introduction", "course": "VLSI DSP", "kind": "slides"}
+
+
+def check_slides_lecture_state() -> None:
+    d = Path(tempfile.mkdtemp())
+    assert fetch.lecture_docs(d, "slides") == {"kind": "slides", "legacy": False, "broad": "absent",
+                                               "deep": "absent", "research": "absent"}
+    write_doc(d / "broad.md", {**S, "mode": "broad", "lecture_read": "true"})
+    write_doc(d / "research.part.md", {**S, "mode": "research", "lecture_read": "false"})
+    # Kind read back from front matter when the caller does not know it.
+    assert fetch.lecture_docs(d) == {"kind": "slides", "legacy": False, "broad": "read",
+                                     "deep": "absent", "research": "partial"}
+    c = fetch.folder_conflict(d, {"title": "Ch02 Pipelining", "course": "VLSI DSP"}, "s")
+    assert c and c["occupant"]["file"] == "broad.md", c
+
+    # An unknown kind in front matter is ignored, not trusted.
+    e = Path(tempfile.mkdtemp())
+    write_doc(e / "broad.md", {**A, "kind": "poster", "mode": "broad"})
+    assert fetch.lecture_docs(e)["kind"] == "paper"
+
+    # No lecture yet: the source PDF decides.
+    g = Path(tempfile.mkdtemp())
+    (g / "deck.pdf").write_bytes(b"%PDF-1.4\n<< /MediaBox [0 0 720 540] >>\n")
+    orig = fetch.pdfinfo
+    fetch.pdfinfo = lambda p: {}
+    try:
+        assert fetch.lecture_docs(g)["kind"] == "slides"
+    finally:
+        fetch.pdfinfo = orig
+
+    # Kind-less lecture (predates the feature) with landscape PDF: lecture wins, treated as paper.
+    h = Path(tempfile.mkdtemp())
+    write_doc(h / "broad.md", {**A, "mode": "broad"})
+    (h / "deck.pdf").write_bytes(b"%PDF-1.4\n<< /MediaBox [0 0 720 540] >>\n")
+    orig = fetch.pdfinfo
+    fetch.pdfinfo = lambda p: {}
+    try:
+        assert fetch.lecture_docs(h)["kind"] == "paper"
+    finally:
+        fetch.pdfinfo = orig
+
+
+def check_same_paper_course() -> None:
+    fm = {"title": "Ch01 Introduction", "course": "VLSI DSP"}
+    assert fetch.same_paper(fm, {"title": "Ch01 Introduction", "course": "vlsi-dsp"})
+    assert not fetch.same_paper(fm, {"title": "Ch01 Introduction", "course": "Computer Architecture"})
+    assert fetch.same_paper(fm, {"title": "Ch01 Introduction"})
+    assert fetch.same_paper({"title": "Ch01 Introduction"},
+                            {"title": "ch01 introduction", "course": "VLSI DSP"})
+
+
+DECK_INFO = {"Page size": "720 x 540 pts", "Pages": "79", "Title": "Slide 1",
+             "CreationDate": "Wed Sep 16 15:42:45 2026 CST"}
+
+
+def _adopt(src: Path, info: dict, out: Path | None = None, title: str = "",
+           kind: str = "", course: str = "") -> dict:
+    orig = fetch.pdfinfo
+    fetch.pdfinfo = lambda p: info
+    try:
+        return fetch.adopt_local(src, out, title, kind, course)
+    finally:
+        fetch.pdfinfo = orig
+
+
+def check_adopt_slides() -> None:
+    root = Path(tempfile.mkdtemp())
+    src = root / "VLSI_Design_1_Introduction.pdf"
+    src.write_bytes(b"%PDF-1.4\n")
+
+    r = _adopt(src, DECK_INFO)
+    assert r["route"] == "needs-title" and r["reason"].startswith("slides need --course and --title"), r
+    assert r["meta"]["title"] == "", r  # "Slide 1" from metadata is not trusted
+    assert src.exists()
+    r = _adopt(src, DECK_INFO, course="VLSI DSP")
+    assert r["reason"].startswith("slides need --title:"), r
+
+    r = _adopt(src, DECK_INFO, course="VLSI DSP", title="Ch01 Introduction")
+    wd = root / "vlsi-dsp" / "ch01-introduction"
+    assert r["route"] == "needs-pdf" and r["workdir"] == str(wd) and r["tier"] == 6, r
+    assert r["slug"] == "ch01-introduction"
+    assert r["meta"] == {"kind": "slides", "title": "Ch01 Introduction", "course": "VLSI DSP",
+                         "authors": [], "year": "2026", "pages": 79, "input": str(src)}, r["meta"]
+    assert r["docs"] == {"kind": "slides", "legacy": False, "broad": "absent",
+                         "deep": "absent", "research": "absent"}, r["docs"]
+    moved = wd / src.name
+    assert moved.exists() and not src.exists()
+
+    # Re-run on the moved file: same folder, no nesting.
+    r = _adopt(moved, DECK_INFO, course="VLSI DSP", title="Ch01 Introduction")
+    assert r["workdir"] == str(wd) and moved.exists(), r
+
+    # Beside a slides lecture, omitted names are read back from its front matter.
+    write_doc(wd / "broad.md", {"kind": "slides", "title": "Ch01 Introduction",
+                                "course": "VLSI DSP", "mode": "broad", "lecture_read": "false"})
+    for kw in ({}, {"course": "VLSI DSP"}, {"title": "Ch01 Introduction"}):
+        r = _adopt(moved, DECK_INFO, **kw)
+        assert r["route"] == "needs-pdf" and r["workdir"] == str(wd) and moved.exists(), (kw, r)
+        assert r["meta"]["title"] == "Ch01 Introduction" and r["meta"]["course"] == "VLSI DSP", r
+        assert r["docs"]["broad"] == "unread", r
+    # Names that differ from that lecture are a conflict, not a nested second folder.
+    r = _adopt(moved, DECK_INFO, course="VLSI DSP", title="Ch1 Introduction")
+    assert r["route"] == "conflict" and r["workdir"] == str(wd) and moved.exists(), r
+    assert not (wd / "vlsi-dsp").exists() and not (wd / "ch1-introduction").exists()
+
+    # PDF already inside the course folder: only the chapter level is created.
+    src2 = root / "vlsi-dsp" / "ch2.pdf"
+    src2.write_bytes(b"%PDF-1.4\n")
+    r = _adopt(src2, DECK_INFO, course="VLSI DSP", title="Ch02 Pipelining")
+    assert r["workdir"] == str(root / "vlsi-dsp" / "ch02-pipelining"), r
+
+    out = Path(tempfile.mkdtemp())
+    src3 = root / "ch3.pdf"
+    src3.write_bytes(b"%PDF-1.4\n")
+    r = _adopt(src3, DECK_INFO, out=out, course="VLSI DSP", title="Ch03 Retiming")
+    assert r["workdir"] == str(out / "vlsi-dsp" / "ch03-retiming"), r
+
+    src4 = root / "ch4.pdf"
+    src4.write_bytes(b"%PDF-1.4\n")
+    r = _adopt(src4, DECK_INFO, course="超大型積體電路", title="Ch04")
+    assert r["route"] == "needs-title" and "no ASCII" in r["reason"] and src4.exists(), r
+
+
+def check_adopt_kind() -> None:
+    root = Path(tempfile.mkdtemp())
+    src = root / "unknown.pdf"
+    src.write_bytes(b"%PDF-1.4\n")
+
+    r = _adopt(src, {})
+    assert r["route"] == "needs-kind" and src.exists(), r
+
+    # --kind forces slides on a deck whose size could not be read.
+    r = _adopt(src, {}, title="Ch01 Intro", kind="slides", course="Course")
+    assert r["route"] == "needs-pdf" and r["docs"]["kind"] == "slides", r
+    wd = Path(r["workdir"])
+
+    # Once a lecture records kind: slides, a re-run without --kind stays put.
+    write_doc(wd / "broad.md", {"kind": "slides", "title": "Ch01 Intro", "course": "Course",
+                                "mode": "broad", "lecture_read": "false"})
+    portrait = {"Page size": "612 x 792 pts", "Title": "Something Else"}
+    r = _adopt(wd / "unknown.pdf", portrait, title="Ch01 Intro", course="Course")
+    assert r["workdir"] == str(wd) and r["docs"]["kind"] == "slides", r
+    assert (wd / "unknown.pdf").exists()
+
+    # A portrait PDF with a title is still a paper, beside the file.
+    p = root / "paper.pdf"
+    p.write_bytes(b"%PDF-1.4\n")
+    r = _adopt(p, {"Page size": "612 x 792 pts", "Title": "A Paper Title"})
+    assert r["workdir"] == str(root / "a-paper-title") and r["meta"]["kind"] == "paper", r
+    assert r["docs"]["kind"] == "paper" and "research" not in r["docs"], r
+
+    # --kind contradicting the lecture beside the file is a conflict, not a nest.
+    r = _adopt(wd / "unknown.pdf", portrait, kind="paper")
+    assert r["route"] == "conflict" and r["workdir"] == str(wd), r
+    assert (wd / "unknown.pdf").exists() and not any(c.is_dir() for c in wd.iterdir()), r
+
+
+def check_list_library_loose_file_in_course() -> None:
+    """A deck not yet adopted sits loose in the course folder; it must not turn
+    the course into one bogus row that hides its adopted chapters."""
+    lib = Path(tempfile.mkdtemp())
+    write_doc(lib / "vlsi-dsp" / "ch01-introduction" / "broad.md",
+              {"kind": "slides", "title": "Ch01 Introduction", "course": "VLSI DSP",
+               "mode": "broad", "lecture_read": "false"})
+    (lib / "vlsi-dsp" / "ch02.pdf").write_bytes(b"%PDF-1.4\n")
+    r = fetch.list_library(lib)
+    assert [row["slug"] for row in r["papers"]] == ["vlsi-dsp/ch01-introduction"], r
+    # A paper adopted from a reading inside the course folder is listed beside it.
+    write_doc(lib / "vlsi-dsp" / "some-paper" / "broad.md", {**A, "mode": "broad"})
+    r = fetch.list_library(lib)
+    assert [row["slug"] for row in r["papers"]] == ["vlsi-dsp/ch01-introduction",
+                                                    "vlsi-dsp/some-paper"], r
+
+
+def check_kind_flags_rejected_on_network_source() -> None:
+    orig_argv, orig_stdout = sys.argv, sys.stdout
+    for extra in (["--kind", "slides"], ["--course", "VLSI DSP"]):
+        sys.argv = ["fetch.py", "1706.03762", *extra]
+        sys.stdout = io.StringIO()
+        try:
+            rc = fetch.main()
+        finally:
+            sys.stdout, sys.argv = orig_stdout, orig_argv
+        assert rc == 2, extra
+
+
+def check_search() -> None:
+    long_abs = "word " * 100
+    records = [
+        {"title": "Systolic Arrays for (VLSI).", "year": 1978, "citationCount": 1064,
+         "externalIds": {"CorpusId": 1}, "authors": [{"name": "H. Kung"}, {"name": ":"}],
+         "venue": "", "abstract": None, "fieldsOfStudy": ["Computer Science"]},
+        {"title": "SIGMA", "year": 2020, "citationCount": 541,
+         "externalIds": {"DOI": "10.1109/x", "ArXiv": "2001.00001"}, "authors": [],
+         "venue": "HPCA", "abstract": long_abs, "fieldsOfStudy": None},
+        {"title": "third", "year": 2021, "citationCount": 1, "externalIds": {},
+         "authors": [], "abstract": "short"},
+    ]
+    calls: list[str] = []
+
+    def fake(path: str) -> dict:
+        calls.append(path)
+        return {"total": 3, "data": records}
+
+    orig = fetch.s2_get
+    fetch.s2_get = fake
+    try:
+        r = fetch.search('"systolic array"', since=2023, limit=2)
+        no_year = fetch.search("dct")
+        fetch.s2_get = lambda path: {"total": 0}
+        empty = fetch.search("nothing matches this")
+        def refuse(path: str) -> dict:
+            raise fetch.urllib.error.HTTPError(path, 429, "Too Many Requests", {}, None)
+        fetch.s2_get = refuse
+        failed = fetch.search("dct")
+        def time_out(path: str) -> dict:
+            raise TimeoutError()
+        fetch.s2_get = time_out
+        timed_out = fetch.search("dct")
+    finally:
+        fetch.s2_get = orig
+
+    assert r["route"] == "search" and r["total"] == 3 and r["since"] == 2023, r
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", r["fetched_on"])
+    p0, p1 = r["papers"]  # cut to limit client-side: the endpoint ignores limit
+    assert p0 == {"title": "Systolic Arrays for (VLSI).", "year": 1978, "arxiv": "", "doi": "",
+                  "authors": ["H. Kung"], "venue": "", "citations": 1064,
+                  "fields": ["Computer Science"], "abstract": ""}, p0
+    assert p1["arxiv"] == "2001.00001" and p1["doi"] == "10.1109/x" and p1["fields"] == []
+    assert len(p1["abstract"]) <= fetch.ABSTRACT_MAX + 1 and p1["abstract"].endswith("…"), p1
+
+    q = calls[0]
+    assert q.startswith("/paper/search/bulk?"), q
+    assert "query=%22systolic%20array%22" in q and "sort=citationCount%3Adesc" in q, q
+    assert "year=2023-" in q, q
+    assert "year=" not in calls[1] and len(no_year["papers"]) == 3
+
+    assert empty == {"route": "search", "query": "nothing matches this", "since": None,
+                     "total": 0, "papers": [], "fetched_on": empty["fetched_on"]}, empty
+    assert failed == {"route": "search-unavailable", "query": "dct", "reason": "HTTP 429"}, failed
+    assert timed_out["reason"] == "TimeoutError", timed_out  # str() of it is empty
+
+
+def check_list_library_eprint_only() -> None:
+    """A paper whose e-print unpacked into src/ but yielded no source.tex holds only
+    a directory. It is a paper folder, not a course: src/ must not be listed as a
+    chapter, and its figure PDFs must not make it look like slides."""
+    lib = Path(tempfile.mkdtemp())
+    (lib / "2401-foo" / "src").mkdir(parents=True)
+    (lib / "2401-foo" / "src" / "fig.pdf").write_bytes(b"%PDF-1.4\n<< /MediaBox [0 0 720 540] >>\n")
+    orig = fetch.pdfinfo
+    fetch.pdfinfo = lambda p: {}
+    try:
+        r = fetch.list_library(lib)
+    finally:
+        fetch.pdfinfo = orig
+    assert [row["slug"] for row in r["papers"]] == ["2401-foo"], r
+    assert r["papers"][0]["kind"] == "paper", r
+
+
+def check_kind_ignores_non_lecture_notes() -> None:
+    """A user's own research.md beside a deck is not a lecture and must not decide
+    the deck's kind; a chapter folder needs a slides deck or lecture to be listed,
+    so a paper's own figs/ subfolder does not turn the paper into a course."""
+    root = Path(tempfile.mkdtemp())
+    (root / "research.md").write_text("# my notes\n", "utf-8")
+    (root / "broad.md").write_text("---\ntags: [todo]\n---\nnotes\n", "utf-8")
+    assert fetch.doc_kind(root) == "", fetch.doc_kind(root)
+    deck = root / "deck.pdf"
+    deck.write_bytes(b"%PDF-1.4\n")
+    r = _adopt(deck, DECK_INFO)
+    assert r["route"] == "needs-title" and r["meta"]["kind"] == "slides", r
+
+    lib = Path(tempfile.mkdtemp())
+    (lib / "mypaper" / "figs").mkdir(parents=True)
+    (lib / "mypaper" / "source.pdf").write_bytes(b"%PDF-1.4\n")
+    (lib / "mypaper" / "figs" / "a.png").write_bytes(b"png")
+    write_doc(lib / "c" / "ch1" / "broad.md", {"kind": "slides", "title": "Ch1", "mode": "broad"})
+    (lib / "c" / "assets" / "x").mkdir(parents=True)
+    (lib / "c" / "assets" / "x.png").write_bytes(b"png")
+    r = fetch.list_library(lib)
+    assert [row["slug"] for row in r["papers"]] == ["c/ch1", "mypaper"], r
+
+
+def check_foreign_pdf_in_lecture_folder() -> None:
+    """A second PDF dropped into a folder that already has a source and a lecture is
+    not that folder's document: neither the slides chapter nor the paper may claim
+    it. And a lecture-less paper's landscape figure PDFs do not make it a course."""
+    root = Path(tempfile.mkdtemp())
+    ch = root / "vlsi-dsp" / "ch01-introduction"
+    write_doc(ch / "broad.md", {"kind": "slides", "title": "Ch01 Introduction",
+                                "course": "VLSI DSP", "mode": "broad"})
+    (ch / "deck.pdf").write_bytes(b"%PDF-1.4\n")
+    (ch / "paper.pdf").write_bytes(b"%PDF-1.4\n")
+    r = _adopt(ch / "paper.pdf", {"Page size": "612 x 792 pts", "Title": "A Paper"})
+    assert r["route"] == "conflict" and "deck.pdf" in r["reason"], r
+    assert (ch / "paper.pdf").exists() and not any(c.is_dir() for c in ch.iterdir()), r
+    # The folder's own deck still re-runs in place.
+    r = _adopt(ch / "deck.pdf", DECK_INFO)
+    assert r["route"] == "conflict", r  # paper.pdf is still there, unexplained
+
+    pa = root / "a-paper"
+    write_doc(pa / "broad.md", {**A, "mode": "broad"})
+    (pa / "a.pdf").write_bytes(b"%PDF-1.4\n")
+    (pa / "talk.pdf").write_bytes(b"%PDF-1.4\n")
+    r = _adopt(pa / "talk.pdf", DECK_INFO)
+    assert r["route"] == "conflict" and (pa / "talk.pdf").exists(), r
+
+    lib = Path(tempfile.mkdtemp())
+    (lib / "b-paper" / "figs").mkdir(parents=True)
+    (lib / "b-paper" / "b.pdf").write_bytes(b"%PDF-1.4\n")
+    (lib / "b-paper" / "figs" / "fig1.pdf").write_bytes(b"%PDF-1.4\n<< /MediaBox [0 0 720 540] >>\n")
+    orig = fetch.pdfinfo
+    fetch.pdfinfo = lambda p: {}
+    try:
+        r = fetch.list_library(lib)
+    finally:
+        fetch.pdfinfo = orig
+    assert [row["slug"] for row in r["papers"]] == ["b-paper"], r
+
+
+def check_user_notes_are_not_lectures() -> None:
+    """The user's own research.md in a paper folder is not a resident paper, and a
+    slides re-run with a different --title is told how to get out, not sent round."""
+    d = Path(tempfile.mkdtemp())
+    (d / "research.md").write_text("# my notes\n", "utf-8")
+    write_doc(d / "broad.md", {**A, "mode": "broad"})
+    assert fetch.folder_conflict(d, A_META, "s") is None
+    assert fetch.library_row(d, "s")["title"] == "Paper A"
+    # The user's own notes.md beside an adopted source is not a rival source.
+    pd = Path(tempfile.mkdtemp()) / "paper-a"
+    write_doc(pd / "broad.md", {**A, "mode": "broad"})
+    (pd / "paper.pdf").write_bytes(b"%PDF-1.4\n")
+    (pd / "notes.md").write_text("mine\n", "utf-8")
+    r = _adopt(pd / "paper.pdf", {"Page size": "612 x 792 pts"}, title="Paper A")
+    assert r["route"] == "needs-pdf" and r["workdir"] == str(pd), r
+
+    root = Path(tempfile.mkdtemp())
+    src = root / "deck.pdf"
+    src.write_bytes(b"%PDF-1.4\n")
+    r = _adopt(src, DECK_INFO, course="VLSI DSP", title="Ch01 Introduction")
+    wd = Path(r["workdir"])
+    write_doc(wd / "broad.md", {"kind": "slides", "title": "Ch01 Introduction",
+                                "course": "VLSI DSP", "mode": "broad"})
+    r = _adopt(wd / "deck.pdf", DECK_INFO, course="VLSI DSP", title="Ch1 Intro")
+    assert r["route"] == "conflict" and "without --course" in r["resolve"], r
+
+
 CHECKS = [
     check_lecture_docs_and_conflicts,
+    check_slides_lecture_state,
+    check_same_paper_course,
     check_resolve_slug,
     check_main_needs_title_on_metadata_failure,
     check_title_flag_populates_meta,
@@ -322,9 +736,20 @@ CHECKS = [
     check_verify_matching,
     check_s2_key_header,
     check_graph,
+    check_graph_authors,
     check_list_library,
     check_list_library_unreadable_dir,
+    check_list_library_eprint_only,
+    check_list_library_loose_file_in_course,
+    check_kind_ignores_non_lecture_notes,
+    check_foreign_pdf_in_lecture_folder,
+    check_user_notes_are_not_lectures,
     check_papers_base,
+    check_pdf_kind,
+    check_adopt_slides,
+    check_adopt_kind,
+    check_kind_flags_rejected_on_network_source,
+    check_search,
 ]
 
 if __name__ == "__main__":

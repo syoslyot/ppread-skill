@@ -17,6 +17,7 @@ front matter 是這份講義的 metadata 來源——不另寫 meta.json。欄�
 ```markdown
 ---
 type: reading
+kind: paper
 mode: broad
 lecture_read: false
 generated: claude
@@ -33,6 +34,7 @@ created: 2026-09-15
 ```
 
 - `mode` 為 `broad` 或 `deep`，與檔名一致。
+- `kind` 一律寫 `paper`。課程簡報的講義格式不在這份檔案，見 `slides-format.md`。
 - `lecture_read` 一律寫 `false`。讀者讀完後自己勾選；Obsidian 會把它顯示成核取方塊。
   重新產生講義時也重設為 `false`——內容換了，原本的「讀完」指的是舊內容。
 - `generated: claude` 不可省略。它明示這是機器產物、可重生，與讀者自己寫的卡片不同。
