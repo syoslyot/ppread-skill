@@ -790,7 +790,16 @@ def adopt_local(src: Path, out_override: Path | None, title_override: str,
     and be moved into a second, nested folder."""
     is_pdf = src.suffix.lower() == ".pdf"
     info = pdfinfo(src) if is_pdf else {}
-    kind = kind_override or doc_kind(src.parent) or (pdf_kind(src, info) if is_pdf else "paper")
+    recorded = doc_kind(src.parent)
+    if kind_override and recorded and kind_override != recorded:
+        return {"route": "conflict", "workdir": str(src.parent), "path": str(src),
+                "reason": f"--kind {kind_override} contradicts the {recorded} lecture "
+                          f"already in {src.parent}; re-running would move the file "
+                          "into a second, nested folder",
+                "resolve": "drop --kind to keep this folder's kind, or move the file "
+                           "out of the folder first if it really is a different "
+                           "document"}
+    kind = kind_override or recorded or (pdf_kind(src, info) if is_pdf else "paper")
     if not kind:
         return {"route": "needs-kind", "path": str(src),
                 "reason": "the page size could not be read, so it is unknown whether "
@@ -948,16 +957,23 @@ def list_library(root: Path) -> dict:
     lecture folder is a non-hidden directory holding at least one file directly.
     A directory holding only directories is a container: a course, whose chapters
     are listed one level down as course/chapter — except assets/, whose
-    subdirectories hold figures, not sources. A src/ marks a paper folder even
+    subdirectories hold figures, not sources. A course may also hold loose files
+    (a deck not yet adopted, a syllabus): a folder with chapter subfolders and no
+    lecture of its own is still a course. A src/ marks a paper folder even
     with no file beside it: fetch_eprint unpacks there before source.tex exists,
     and an e-print with no main .tex never gets one."""
     papers = []
     for d in _subdirs(root) if root.is_dir() else []:
-        if _holds_file(d) or _has_src(d):
+        if d.name == "assets":
+            continue
+        held, src = _holds_file(d), _has_src(d)
+        chapters = [c for c in _subdirs(d) if c.name != "src" and _holds_file(c)]
+        if not (held or src or chapters):
+            continue
+        if src or not chapters or doc_kind(d):
             papers.append(library_row(d, d.name))
-        elif d.name != "assets":
-            papers += [library_row(c, f"{d.name}/{c.name}")
-                       for c in _subdirs(d) if _holds_file(c)]
+        else:
+            papers += [library_row(c, f"{d.name}/{c.name}") for c in chapters]
     return {"route": "list", "library": str(root), "papers": papers}
 
 

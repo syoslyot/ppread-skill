@@ -527,6 +527,23 @@ def check_adopt_kind() -> None:
     assert r["workdir"] == str(root / "a-paper-title") and r["meta"]["kind"] == "paper", r
     assert r["docs"]["kind"] == "paper" and "research" not in r["docs"], r
 
+    # --kind contradicting the lecture beside the file is a conflict, not a nest.
+    r = _adopt(wd / "unknown.pdf", portrait, kind="paper")
+    assert r["route"] == "conflict" and r["workdir"] == str(wd), r
+    assert (wd / "unknown.pdf").exists() and not any(c.is_dir() for c in wd.iterdir()), r
+
+
+def check_list_library_loose_file_in_course() -> None:
+    """A deck not yet adopted sits loose in the course folder; it must not turn
+    the course into one bogus row that hides its adopted chapters."""
+    lib = Path(tempfile.mkdtemp())
+    write_doc(lib / "vlsi-dsp" / "ch01-introduction" / "broad.md",
+              {"kind": "slides", "title": "Ch01 Introduction", "course": "VLSI DSP",
+               "mode": "broad", "lecture_read": "false"})
+    (lib / "vlsi-dsp" / "ch02.pdf").write_bytes(b"%PDF-1.4\n")
+    r = fetch.list_library(lib)
+    assert [row["slug"] for row in r["papers"]] == ["vlsi-dsp/ch01-introduction"], r
+
 
 def check_kind_flags_rejected_on_network_source() -> None:
     orig_argv, orig_stdout = sys.argv, sys.stdout
@@ -630,6 +647,7 @@ CHECKS = [
     check_list_library,
     check_list_library_unreadable_dir,
     check_list_library_eprint_only,
+    check_list_library_loose_file_in_course,
     check_papers_base,
     check_pdf_kind,
     check_adopt_slides,
