@@ -682,11 +682,14 @@ def front_matter(f: Path) -> dict | None:
 def doc_kind(workdir: Path) -> str:
     """The kind a lecture in this folder records, or 'paper' when a lecture exists
     but doesn't record a kind—all lectures predate the kind field. Returns '' only
-    when no lecture file exists at all."""
+    when no lecture file exists at all. A file only counts when its front matter
+    marks it as ppread's: broad.md or research.md are also natural names for the
+    user's own notes, and one of those must not decide a deck's kind."""
     found_lecture = False
     for name in DOC_FILES:
         fields = front_matter(workdir / name)
-        if fields is not None:
+        if fields and (fields.get("generated") == "claude"
+                       or fields.get("type") == "reading" or "mode" in fields):
             found_lecture = True
             kind = fields.get("kind", "")
             if kind in MODES:
@@ -959,7 +962,8 @@ def list_library(root: Path) -> dict:
     are listed one level down as course/chapter — except assets/, whose
     subdirectories hold figures, not sources. A course may also hold loose files
     (a deck not yet adopted, a syllabus): a folder with chapter subfolders and no
-    lecture of its own is still a course. A src/ marks a paper folder even
+    lecture of its own is still a course. Only slides chapters make a course: a
+    paper's own subfolder (figs/) must not turn the paper into one. A src/ marks a paper folder even
     with no file beside it: fetch_eprint unpacks there before source.tex exists,
     and an e-print with no main .tex never gets one."""
     papers = []
@@ -967,7 +971,8 @@ def list_library(root: Path) -> dict:
         if d.name == "assets":
             continue
         held, src = _holds_file(d), _has_src(d)
-        chapters = [c for c in _subdirs(d) if c.name != "src" and _holds_file(c)]
+        chapters = [c for c in _subdirs(d) if c.name not in ("src", "assets")
+                    and _holds_file(c) and lecture_docs(c)["kind"] == "slides"]
         if not (held or src or chapters):
             continue
         if src or not chapters or doc_kind(d):

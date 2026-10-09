@@ -631,6 +631,30 @@ def check_list_library_eprint_only() -> None:
     assert r["papers"][0]["kind"] == "paper", r
 
 
+def check_kind_ignores_non_lecture_notes() -> None:
+    """A user's own research.md beside a deck is not a lecture and must not decide
+    the deck's kind; a chapter folder needs a slides deck or lecture to be listed,
+    so a paper's own figs/ subfolder does not turn the paper into a course."""
+    root = Path(tempfile.mkdtemp())
+    (root / "research.md").write_text("# my notes\n", "utf-8")
+    (root / "broad.md").write_text("---\ntags: [todo]\n---\nnotes\n", "utf-8")
+    assert fetch.doc_kind(root) == "", fetch.doc_kind(root)
+    deck = root / "deck.pdf"
+    deck.write_bytes(b"%PDF-1.4\n")
+    r = _adopt(deck, DECK_INFO)
+    assert r["route"] == "needs-title" and r["meta"]["kind"] == "slides", r
+
+    lib = Path(tempfile.mkdtemp())
+    (lib / "mypaper" / "figs").mkdir(parents=True)
+    (lib / "mypaper" / "source.pdf").write_bytes(b"%PDF-1.4\n")
+    (lib / "mypaper" / "figs" / "a.png").write_bytes(b"png")
+    write_doc(lib / "c" / "ch1" / "broad.md", {"kind": "slides", "title": "Ch1", "mode": "broad"})
+    (lib / "c" / "assets" / "x").mkdir(parents=True)
+    (lib / "c" / "assets" / "x.png").write_bytes(b"png")
+    r = fetch.list_library(lib)
+    assert [row["slug"] for row in r["papers"]] == ["c/ch1", "mypaper"], r
+
+
 CHECKS = [
     check_lecture_docs_and_conflicts,
     check_slides_lecture_state,
@@ -648,6 +672,7 @@ CHECKS = [
     check_list_library_unreadable_dir,
     check_list_library_eprint_only,
     check_list_library_loose_file_in_course,
+    check_kind_ignores_non_lecture_notes,
     check_papers_base,
     check_pdf_kind,
     check_adopt_slides,
