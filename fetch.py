@@ -309,7 +309,7 @@ VERIFY_MAX = 25
 def title_match(query: str) -> dict | None:
     """Semantic Scholar's best title match, or None when it has none. Other
     failures raise, so callers can tell 'no such paper' from 'could not ask'."""
-    path = f"/paper/search/match?query={urllib.parse.quote(query)}&fields=title,year,externalIds"
+    path = f"/paper/search/match?query={urllib.parse.quote(query)}&fields=title,year,externalIds,authors"
     try:
         data = s2_get(path)
     except urllib.error.HTTPError as e:
@@ -327,7 +327,8 @@ def match_status(query: str, rec: dict | None) -> dict:
     if not rec:
         return {"query": query, "status": "not-found"}
     if _norm_title(rec.get("title", "")) == _norm_title(query):
-        return {"query": query, "status": "exact", **s2_ids(rec)}
+        return {"query": query, "status": "exact", **s2_ids(rec),
+                "authors": clean_authors([a.get("name", "") for a in rec.get("authors") or []])}
     return {"query": query, "status": "mismatch", "candidate": rec.get("title") or ""}
 
 
@@ -340,7 +341,7 @@ def verify_title(query: str) -> dict:
         return {"query": query, "status": "error", "reason": str(e)}
 
 
-GRAPH_FIELDS = "title,year,externalIds,citationCount,isInfluential,intents"
+GRAPH_FIELDS = "title,year,authors,externalIds,citationCount,isInfluential,intents"
 GRAPH_PAGE = 1000
 # Citations come newest-first and the API cannot sort them by impact; offset+limit
 # is capped below 10000. Past three pages a keyless run spends minutes in backoff
@@ -351,7 +352,9 @@ GRAPH_TOP_CITATIONS = 50
 
 def graph_node(edge: dict, side: str) -> dict:
     p = edge.get(side) or {}
-    return {**s2_ids(p), "citations": p.get("citationCount") or 0,
+    return {**s2_ids(p),
+            "authors": clean_authors([a.get("name", "") for a in p.get("authors") or []]),
+            "citations": p.get("citationCount") or 0,
             "influential": bool(edge.get("isInfluential")),
             "intents": edge.get("intents") or []}
 
@@ -408,6 +411,46 @@ def graph(source: str) -> dict:
     if error:
         result["citations_error"] = error
     return result
+
+
+SEARCH_FIELDS = "title,year,authors,venue,citationCount,externalIds,abstract,fieldsOfStudy"
+SEARCH_LIMIT = 10
+SEARCH_MAX = 1000
+ABSTRACT_MAX = 300
+
+
+def search(query: str, since: int | None = None, limit: int = SEARCH_LIMIT) -> dict:
+    """Papers on a topic, most-cited first — research mode's only source for a
+    deck, which cites almost nothing a citation graph could start from. The bulk
+    endpoint is the one search that sorts by citation count. It ignores `limit`
+    and returns up to 1000 records, so the cut happens here. Abstracts are often
+    null; fieldsOfStudy is returned so the agent can still drop namesakes from
+    other fields. Zero results is a search that worked, distinct from one that
+    could not be made."""
+    params = {"query": query, "sort": "citationCount:desc", "fields": SEARCH_FIELDS}
+    if since:
+        params["year"] = f"{since}-"
+    try:
+        data = s2_get("/paper/search/bulk?"
+                      + urllib.parse.urlencode(params, quote_via=urllib.parse.quote))
+    except urllib.error.HTTPError as e:
+        return {"route": "search-unavailable", "query": query, "reason": f"HTTP {e.code}"}
+    except Exception as e:
+        return {"route": "search-unavailable", "query": query,
+                "reason": str(e) or type(e).__name__}
+
+    papers = []
+    for p in (data.get("data") or [])[:limit]:
+        abstract = (p.get("abstract") or "").strip()
+        if len(abstract) > ABSTRACT_MAX:
+            abstract = abstract[:ABSTRACT_MAX].rsplit(" ", 1)[0] + "…"
+        papers.append({**s2_ids(p),
+                       "authors": clean_authors([a.get("name", "") for a in p.get("authors") or []]),
+                       "venue": p.get("venue") or "", "citations": p.get("citationCount") or 0,
+                       "fields": p.get("fieldsOfStudy") or [], "abstract": abstract})
+    return {"route": "search", "query": query, "since": since,
+            "total": data.get("total") or 0, "papers": papers,
+            "fetched_on": time.strftime("%Y-%m-%d")}
 
 
 # --- arXiv e-print --------------------------------------------------------
@@ -546,26 +589,57 @@ def assemble(root: Path, strip_comments: bool) -> str | None:
 # --- local files ---
 
 
-def pdf_title(path: Path) -> tuple[str, str, str]:
-    """(title, author, year) from the PDF's own metadata via pdfinfo, when
-    available. LaTeX-produced PDFs almost always carry a usable /Title."""
+def pdfinfo(path: Path) -> dict:
+    """pdfinfo's 'Key: value' lines, or {} when pdfinfo is missing or fails."""
     if not shutil.which("pdfinfo"):
-        return "", "", ""
+        return {}
     try:
         out = subprocess.run(["pdfinfo", str(path)], capture_output=True,
                              text=True, timeout=20).stdout
     except Exception as e:
         log(f"  pdfinfo: {e}")
-        return "", "", ""
+        return {}
     fields = {}
     for line in out.splitlines():
         k, _, v = line.partition(":")
         fields[k.strip()] = v.strip()
-    year = ""
+    return fields
+
+
+def pdf_title(path: Path, info: dict | None = None) -> tuple[str, str, str]:
+    """(title, author, year) from the PDF's own metadata. LaTeX-produced PDFs
+    almost always carry a usable /Title."""
+    fields = pdfinfo(path) if info is None else info
     m = re.search(r"\b(19|20)\d{2}\b", fields.get("CreationDate", ""))
+    return fields.get("Title", ""), fields.get("Author", ""), m.group(0) if m else ""
+
+
+_MEDIABOX = re.compile(rb"/MediaBox\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]")
+
+
+def pdf_kind(path: Path, info: dict | None = None) -> str:
+    """'slides' when the first page displays landscape, 'paper' otherwise, '' when
+    the page size cannot be read. Orientation is the one signal every deck shares
+    and almost no paper does. The byte scan is the fallback for machines without
+    pdfinfo; it misses a MediaBox packed into a compressed object stream, and the
+    caller then asks rather than guesses."""
+    info = pdfinfo(path) if info is None else info
+    m = re.match(r"([\d.]+) x ([\d.]+)", info.get("Page size", ""))
     if m:
-        year = m.group(0)
-    return fields.get("Title", ""), fields.get("Author", ""), year
+        w, h = float(m[1]), float(m[2])
+        if info.get("Page rot", "0") in ("90", "270"):
+            w, h = h, w
+    else:
+        try:
+            box = _MEDIABOX.search(path.read_bytes())
+        except OSError as e:
+            log(f"  {path.name}: {e}")
+            return ""
+        if not box:
+            return ""
+        x0, y0, x1, y1 = map(float, box.groups())
+        w, h = abs(x1 - x0), abs(y1 - y0)
+    return "slides" if w > h else "paper"
 
 
 # --- folder identity ------------------------------------------------------
@@ -577,7 +651,9 @@ def pdf_title(path: Path) -> tuple[str, str, str]:
 # paper than the source lying next to it, and nothing in either file says so.
 
 
-DOC_FILES = ("broad.md", "deep.md", "broad.part.md", "deep.part.md", "lecture.md")
+DOC_FILES = ("broad.md", "deep.md", "research.md", "broad.part.md", "deep.part.md",
+             "research.part.md", "lecture.md")
+MODES = {"paper": ("broad", "deep"), "slides": ("broad", "deep", "research")}
 
 
 def front_matter(f: Path) -> dict | None:
@@ -603,13 +679,38 @@ def front_matter(f: Path) -> dict | None:
     return fields
 
 
-def lecture_docs(workdir: Path) -> dict:
+def doc_kind(workdir: Path) -> str:
+    """The kind a lecture in this folder records, or 'paper' when a lecture exists
+    but doesn't record a kind—all lectures predate the kind field. Returns '' only
+    when no lecture file exists at all."""
+    found_lecture = False
+    for name in DOC_FILES:
+        fields = front_matter(workdir / name)
+        if fields is not None:
+            found_lecture = True
+            kind = fields.get("kind", "")
+            if kind in MODES:
+                return kind
+    if found_lecture:
+        return "paper"
+    return ""
+
+
+def source_kind(workdir: Path) -> str:
+    """For a folder with no lecture yet: slides if any PDF in it is landscape."""
+    return "slides" if any(pdf_kind(p) == "slides" for p in sorted(workdir.glob("*.pdf"))) else "paper"
+
+
+def lecture_docs(workdir: Path, kind: str = "") -> dict:
     """Which lectures a folder holds and how far each has got. A lecture is written
     as <mode>.part.md and renamed only once its last section is done, so a .part
     file means unfinished even when a finished file of that mode also exists — a
-    regeneration in progress is not done."""
-    docs = {"legacy": (workdir / "lecture.md").is_file()}
-    for mode in ("broad", "deep"):
+    regeneration in progress is not done. Which modes exist depends on the kind:
+    a caller that already decided it passes it, otherwise the folder says."""
+    if kind not in MODES:
+        kind = doc_kind(workdir) or source_kind(workdir)
+    docs = {"kind": kind, "legacy": (workdir / "lecture.md").is_file()}
+    for mode in MODES[kind]:
         if (workdir / f"{mode}.part.md").is_file():
             docs[mode] = "partial"
             continue
@@ -630,9 +731,14 @@ def _norm_title(v: str) -> str:
 
 
 def same_paper(ident: dict, meta: dict) -> bool:
-    """Strongest available identifier wins. An arXiv id or a DOI settles it
-    outright; only when one side lacks both does the comparison fall back to the
-    title, normalised so that casing and punctuation do not fake a conflict."""
+    """Strongest available identifier wins, within one course: two decks share
+    a chapter title far more often than two papers share a title, so differing
+    courses settle it first. An arXiv id or a DOI settles it outright; only when
+    one side lacks both does the comparison fall back to the title, normalised so
+    that casing and punctuation do not fake a conflict."""
+    c1, c2 = _norm_title(ident.get("course", "")), _norm_title(meta.get("course", ""))
+    if c1 and c2 and c1 != c2:
+        return False
     a1, a2 = _norm_arxiv(ident.get("arxiv", "")), _norm_arxiv(meta.get("arxiv_id", ""))
     if a1 and a2:
         return a1 == a2
@@ -669,18 +775,35 @@ def folder_conflict(workdir: Path, meta: dict, slug: str) -> dict | None:
     return None
 
 
-def adopt_local(src: Path, out_override: Path | None, title_override: str) -> dict:
+def adopt_local(src: Path, out_override: Path | None, title_override: str,
+                kind_override: str = "", course: str = "") -> dict:
     """Give a local file the same shape every other route produces: one folder per
     paper, holding the source and (later) the lecture. The folder is created BESIDE
     the file: the file already sits where the user put it, and hauling it off to the
     configured library would relocate something nobody asked to have moved. Into
     that folder the file is MOVED, not copied — two copies of a 10 MB thesis in the
-    same tree is not a library."""
-    title, author, year = pdf_title(src)
+    same tree is not a library.
+
+    The kind is decided before anything else, because it decides the folder's
+    shape. A lecture already beside the file outranks the page size: a portrait
+    deck adopted with --kind slides must not turn back into a paper on a re-run
+    and be moved into a second, nested folder."""
+    is_pdf = src.suffix.lower() == ".pdf"
+    info = pdfinfo(src) if is_pdf else {}
+    kind = kind_override or doc_kind(src.parent) or (pdf_kind(src, info) if is_pdf else "paper")
+    if not kind:
+        return {"route": "needs-kind", "path": str(src),
+                "reason": "the page size could not be read, so it is unknown whether "
+                          "this PDF is a paper or slides; look at its first page, then "
+                          "re-run with --kind paper or --kind slides"}
+    if kind == "slides":
+        return adopt_slides(src, out_override, title_override, course, info)
+
+    title, author, year = pdf_title(src, info)
     if title_override:
         title = title_override
-    meta = {"title": title, "authors": [author] if author else [], "year": year,
-            "doi": "", "arxiv_id": "", "abstract": "", "venue": "",
+    meta = {"kind": "paper", "title": title, "authors": [author] if author else [],
+            "year": year, "doi": "", "arxiv_id": "", "abstract": "", "venue": "",
             "input": str(src)}
 
     if not title:
@@ -705,6 +828,51 @@ def adopt_local(src: Path, out_override: Path | None, title_override: str) -> di
         workdir = src.parent
     else:
         workdir = src.parent / slug
+    return place(src, workdir, meta, slug, "paper")
+
+
+def adopt_slides(src: Path, out_override: Path | None, title: str, course: str,
+                 info: dict) -> dict:
+    """Slides go under <course>/<chapter>/ so a course's chapters sit together.
+    Both names come from the agent, read off the cover and the running headers:
+    deck exports carry /Title values like "Slide 1" or "PowerPoint Presentation",
+    and trusting one would mint a wrong folder name with nothing to flag it."""
+    # Re-run beside its own lecture: the lecture already names the deck, so omitted
+    # names are read back from it, and differing ones must surface as a conflict
+    # in this folder rather than mint a second one nested inside it.
+    beside = doc_kind(src.parent) == "slides"
+    if beside:
+        fm = next((f for f in (front_matter(src.parent / n) for n in DOC_FILES) if f), {})
+        course, title = course or fm.get("course", ""), title or fm.get("title", "")
+    pages = info.get("Pages", "")
+    meta = {"kind": "slides", "title": title, "course": course, "authors": [],
+            "year": pdf_title(src, info)[2], "pages": int(pages) if pages.isdigit() else 0,
+            "input": str(src)}
+    missing = [flag for flag, value in (("--course", course), ("--title", title)) if not value]
+    if missing:
+        return {"route": "needs-title", "meta": meta, "path": str(src),
+                "reason": f"slides need {' and '.join(missing)}: read the cover and the "
+                          "running headers and footers, then re-run with --kind slides "
+                          "--course \"<course>\" --title \"Ch<NN> <chapter title>\""}
+    course_slug, slug = slugify(course, ""), slugify(title, "")
+    if not course_slug or not slug:
+        return {"route": "needs-title", "meta": meta, "path": str(src),
+                "reason": "the course or the title leaves no ASCII characters to name "
+                          "a folder with; re-run with the English --course and --title"}
+
+    if out_override is not None:
+        workdir = out_override / course_slug / slug
+    elif beside or (src.parent.name == slug and src.parent.parent.name == course_slug):
+        workdir = src.parent
+    elif src.parent.name == course_slug:
+        workdir = src.parent / slug
+    else:
+        workdir = src.parent / course_slug / slug
+    return place(src, workdir, meta, slug, "slides")
+
+
+def place(src: Path, workdir: Path, meta: dict, slug: str, kind: str) -> dict:
+    """Move a local source into its folder, after proving the folder is its own."""
     dest = workdir / src.name
 
     conflict = folder_conflict(workdir, meta, slug)
@@ -737,7 +905,7 @@ def adopt_local(src: Path, out_override: Path | None, title_override: str) -> di
 
     ext = dest.suffix.lower()
     return {"slug": slug, "workdir": str(workdir), "meta": meta,
-            "docs": lecture_docs(workdir),
+            "docs": lecture_docs(workdir, kind),
             "route": "needs-pdf" if ext == ".pdf" else "local",
             "tier": 6 if ext == ".pdf" else 1,
             "pdf_path": str(dest) if ext == ".pdf" else "",
@@ -745,32 +913,42 @@ def adopt_local(src: Path, out_override: Path | None, title_override: str) -> di
             "reason": "local file; no LaTeX source available"}
 
 
-def list_library(root: Path) -> dict:
-    """Every paper folder under root with the state of its lectures. A paper folder
-    is a non-hidden directory holding at least one file directly: that admits a
-    folder with only a source in it and skips containers such as assets/, whose
-    contents are all subdirectories."""
-    papers = []
+def _subdirs(d: Path) -> list[Path]:
     try:
-        dirs = sorted(p for p in root.iterdir()
-                      if p.is_dir() and not p.name.startswith(".")) if root.is_dir() else []
+        return sorted(p for p in d.iterdir() if p.is_dir() and not p.name.startswith("."))
     except OSError as e:
-        log(f"  {root}: {e}")
-        dirs = []
-    for d in dirs:
-        try:
-            has_file = any(p.is_file() for p in d.iterdir())
-        except OSError as e:
-            log(f"  {d}: {e}")
-            continue
-        if not has_file:
-            continue
-        fields = next((fm for fm in (front_matter(d / n) for n in DOC_FILES) if fm), {})
-        docs = lecture_docs(d)
-        papers.append({"slug": d.name, "title": fields.get("title", ""),
-                       "year": fields.get("year", ""), "tier": fields.get("tier", ""),
-                       "broad": docs["broad"], "deep": docs["deep"],
-                       "legacy": docs["legacy"]})
+        log(f"  {d}: {e}")
+        return []
+
+
+def _holds_file(d: Path) -> bool:
+    try:
+        return any(p.is_file() and not p.name.startswith(".") for p in d.iterdir())
+    except OSError as e:
+        log(f"  {d}: {e}")
+        return False
+
+
+def library_row(d: Path, slug: str) -> dict:
+    fields = next((fm for fm in (front_matter(d / n) for n in DOC_FILES) if fm), {})
+    docs = lecture_docs(d)
+    return {"slug": slug, "title": fields.get("title", ""), "year": fields.get("year", ""),
+            "tier": fields.get("tier", ""), **docs}
+
+
+def list_library(root: Path) -> dict:
+    """Every paper or chapter folder under root with the state of its lectures. A
+    lecture folder is a non-hidden directory holding at least one file directly.
+    A directory holding only directories is a container: a course, whose chapters
+    are listed one level down as course/chapter — except assets/, whose
+    subdirectories hold figures, not sources."""
+    papers = []
+    for d in _subdirs(root) if root.is_dir() else []:
+        if _holds_file(d):
+            papers.append(library_row(d, d.name))
+        elif d.name != "assets":
+            papers += [library_row(c, f"{d.name}/{c.name}")
+                       for c in _subdirs(d) if _holds_file(c)]
     return {"route": "list", "library": str(root), "papers": papers}
 
 
@@ -791,6 +969,8 @@ views:
         - 'lecture_read != true'
     order:
       - title
+      - kind
+      - course
       - mode
       - year
       - lecture_read
@@ -798,6 +978,8 @@ views:
     name: 全部講義
     order:
       - title
+      - kind
+      - course
       - mode
       - year
       - lecture_read
@@ -880,6 +1062,12 @@ def main() -> int:
                          "name. Needed for a local file whose metadata has no title "
                          "or no ASCII in it, and to separate two papers whose titles "
                          "land on the same folder")
+    ap.add_argument("--kind", choices=("paper", "slides"),
+                    help="local PDF only: force the kind when the page size cannot be "
+                         "read or misleads (a portrait slide deck)")
+    ap.add_argument("--course", default=None,
+                    help="local slides only: the course name; with --title it names "
+                         "the <course>/<chapter> folder")
     ap.add_argument("--show-config", action="store_true",
                     help="print the remembered output location and exit")
     ap.add_argument("--keep-comments", action="store_true",
@@ -890,6 +1078,14 @@ def main() -> int:
     ap.add_argument("--graph", metavar="ID_OR_TITLE",
                     help="references and citations of a paper from Semantic Scholar, "
                          "ranked by influence then citation count")
+    ap.add_argument("--search", metavar="QUERY",
+                    help="papers on a topic from Semantic Scholar, most-cited first; "
+                         "quote phrases inside the query: '\"systolic array\"'")
+    ap.add_argument("--since", type=int, metavar="YEAR",
+                    help="with --search: only papers from YEAR onward")
+    ap.add_argument("--limit", type=int, default=SEARCH_LIMIT, metavar="N",
+                    help=f"with --search: at most N papers (default {SEARCH_LIMIT}, "
+                         f"max {SEARCH_MAX})")
     ap.add_argument("--list", nargs="?", const="", metavar="DIR",
                     help="list paper folders and the state of their lectures; "
                          "defaults to the configured library")
@@ -906,6 +1102,14 @@ def main() -> int:
 
     if args.graph:
         print(json.dumps(graph(args.graph), ensure_ascii=False, indent=2))
+        return 0
+
+    if args.search:
+        if not 1 <= args.limit <= SEARCH_MAX:
+            log(f"--limit must be between 1 and {SEARCH_MAX}")
+            return 2
+        print(json.dumps(search(args.search, args.since, args.limit),
+                         ensure_ascii=False, indent=2))
         return 0
 
     if args.list is not None:
@@ -950,9 +1154,14 @@ def main() -> int:
     # this route never has to ask the library question below.
     if kind == "file":
         override = Path(args.out).expanduser() if args.out else None
-        result = adopt_local(Path(value), override, args.title or "")
+        result = adopt_local(Path(value), override, args.title or "",
+                             args.kind or "", args.course or "")
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
+
+    if args.kind or args.course:
+        log("--kind and --course apply to a local PDF only; a network source is always a paper")
+        return 2
 
     # Gate before any network call or mkdir: never download into a directory the
     # user has not agreed to.
@@ -1029,7 +1238,7 @@ def main() -> int:
         return 0
 
     result = {"slug": slug, "workdir": str(workdir), "meta": meta,
-              "docs": lecture_docs(workdir)}
+              "docs": lecture_docs(workdir, "paper")}
 
     if meta["arxiv_id"]:
         workdir.mkdir(parents=True, exist_ok=True)
