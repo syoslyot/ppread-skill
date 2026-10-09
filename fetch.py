@@ -1015,7 +1015,10 @@ def list_library(root: Path) -> dict:
         if src or not chapters or doc_kind(d):
             papers.append(library_row(d, d.name))
         else:
-            papers += [library_row(c, f"{d.name}/{c.name}") for c in chapters]
+            # A paper adopted beside a course reading sits at chapter depth too.
+            members = chapters + [c for c in _subdirs(d) if c not in chapters
+                                  and c.name not in ("src", "assets") and doc_kind(c) == "paper"]
+            papers += [library_row(c, f"{d.name}/{c.name}") for c in sorted(members)]
     return {"route": "list", "library": str(root), "papers": papers}
 
 

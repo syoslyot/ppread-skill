@@ -543,6 +543,11 @@ def check_list_library_loose_file_in_course() -> None:
     (lib / "vlsi-dsp" / "ch02.pdf").write_bytes(b"%PDF-1.4\n")
     r = fetch.list_library(lib)
     assert [row["slug"] for row in r["papers"]] == ["vlsi-dsp/ch01-introduction"], r
+    # A paper adopted from a reading inside the course folder is listed beside it.
+    write_doc(lib / "vlsi-dsp" / "some-paper" / "broad.md", {**A, "mode": "broad"})
+    r = fetch.list_library(lib)
+    assert [row["slug"] for row in r["papers"]] == ["vlsi-dsp/ch01-introduction",
+                                                    "vlsi-dsp/some-paper"], r
 
 
 def check_kind_flags_rejected_on_network_source() -> None:
