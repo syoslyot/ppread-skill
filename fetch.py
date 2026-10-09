@@ -679,6 +679,13 @@ def front_matter(f: Path) -> dict | None:
     return fields
 
 
+def is_lecture(fields: dict | None) -> bool:
+    """Front matter that marks a file as ppread's own. broad.md and research.md are
+    also natural names for the user's notes, which must not speak for a folder."""
+    return bool(fields) and (fields.get("generated") == "claude"
+                             or fields.get("type") == "reading" or "mode" in fields)
+
+
 def doc_kind(workdir: Path) -> str:
     """The kind a lecture in this folder records, or 'paper' when a lecture exists
     but doesn't record a kind—all lectures predate the kind field. Returns '' only
@@ -688,8 +695,7 @@ def doc_kind(workdir: Path) -> str:
     found_lecture = False
     for name in DOC_FILES:
         fields = front_matter(workdir / name)
-        if fields and (fields.get("generated") == "claude"
-                       or fields.get("type") == "reading" or "mode" in fields):
+        if is_lecture(fields):
             found_lecture = True
             kind = fields.get("kind", "")
             if kind in MODES:
@@ -765,6 +771,12 @@ def folder_conflict(workdir: Path, meta: dict, slug: str) -> dict | None:
     for name in DOC_FILES:
         ident = front_matter(workdir / name)
         if ident is None or same_paper(ident, meta):
+            continue
+        # A paper has no research lecture, so a research.md that is not ppread's
+        # is the user's own note, not a resident paper. broad.md and deep.md stay
+        # strict: a lecture would be renamed over them.
+        if name.startswith("research") and meta.get("kind", "paper") == "paper" \
+                and not is_lecture(ident):
             continue
         held = ident.get("title") or ident.get("arxiv") or ident.get("doi")
         return {"route": "conflict", "slug": slug, "workdir": str(workdir), "meta": meta,
@@ -865,7 +877,7 @@ def adopt_slides(src: Path, out_override: Path | None, title: str, course: str,
     # in this folder rather than mint a second one nested inside it.
     beside = doc_kind(src.parent) == "slides"
     if beside:
-        fm = next((f for f in (front_matter(src.parent / n) for n in DOC_FILES) if f), {})
+        fm = next((f for f in (front_matter(src.parent / n) for n in DOC_FILES) if is_lecture(f)), {})
         course, title = course or fm.get("course", ""), title or fm.get("title", "")
     pages = info.get("Pages", "")
     meta = {"kind": "slides", "title": title, "course": course, "authors": [],
@@ -891,7 +903,14 @@ def adopt_slides(src: Path, out_override: Path | None, title: str, course: str,
         workdir = src.parent / slug
     else:
         workdir = src.parent / course_slug / slug
-    return place(src, workdir, meta, slug, "slides")
+    result = place(src, workdir, meta, slug, "slides")
+    if beside and result.get("route") == "conflict":
+        # The paper-oriented advice (another --title) would land here again.
+        result["resolve"] = (f"this file sits beside the lecture for {fm.get('course', '')!r} "
+                             f"/ {fm.get('title', '')!r}: re-run without --course and "
+                             "--title, or pass exactly those; a different chapter must be "
+                             "moved out of this folder first")
+    return result
 
 
 def place(src: Path, workdir: Path, meta: dict, slug: str, kind: str) -> dict:
@@ -960,7 +979,8 @@ def _has_src(d: Path) -> bool:
 
 
 def library_row(d: Path, slug: str) -> dict:
-    fields = next((fm for fm in (front_matter(d / n) for n in DOC_FILES) if fm), {})
+    found = [fm for fm in (front_matter(d / n) for n in DOC_FILES) if fm]
+    fields = next((fm for fm in found if is_lecture(fm)), found[0] if found else {})
     docs = lecture_docs(d)
     return {"slug": slug, "title": fields.get("title", ""), "year": fields.get("year", ""),
             "tier": fields.get("tier", ""), **docs}

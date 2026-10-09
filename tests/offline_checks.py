@@ -692,6 +692,26 @@ def check_foreign_pdf_in_lecture_folder() -> None:
     assert [row["slug"] for row in r["papers"]] == ["b-paper"], r
 
 
+def check_user_notes_are_not_lectures() -> None:
+    """The user's own research.md in a paper folder is not a resident paper, and a
+    slides re-run with a different --title is told how to get out, not sent round."""
+    d = Path(tempfile.mkdtemp())
+    (d / "research.md").write_text("# my notes\n", "utf-8")
+    write_doc(d / "broad.md", {**A, "mode": "broad"})
+    assert fetch.folder_conflict(d, A_META, "s") is None
+    assert fetch.library_row(d, "s")["title"] == "Paper A"
+
+    root = Path(tempfile.mkdtemp())
+    src = root / "deck.pdf"
+    src.write_bytes(b"%PDF-1.4\n")
+    r = _adopt(src, DECK_INFO, course="VLSI DSP", title="Ch01 Introduction")
+    wd = Path(r["workdir"])
+    write_doc(wd / "broad.md", {"kind": "slides", "title": "Ch01 Introduction",
+                                "course": "VLSI DSP", "mode": "broad"})
+    r = _adopt(wd / "deck.pdf", DECK_INFO, course="VLSI DSP", title="Ch1 Intro")
+    assert r["route"] == "conflict" and "without --course" in r["resolve"], r
+
+
 CHECKS = [
     check_lecture_docs_and_conflicts,
     check_slides_lecture_state,
@@ -711,6 +731,7 @@ CHECKS = [
     check_list_library_loose_file_in_course,
     check_kind_ignores_non_lecture_notes,
     check_foreign_pdf_in_lecture_folder,
+    check_user_notes_are_not_lectures,
     check_papers_base,
     check_pdf_kind,
     check_adopt_slides,
