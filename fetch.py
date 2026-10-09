@@ -679,14 +679,23 @@ def front_matter(f: Path) -> dict | None:
     return fields
 
 
+def is_lecture(fields: dict | None) -> bool:
+    """Front matter that marks a file as ppread's own. broad.md and research.md are
+    also natural names for the user's notes, which must not speak for a folder."""
+    return bool(fields) and (fields.get("generated") == "claude"
+                             or fields.get("type") == "reading" or "mode" in fields)
+
+
 def doc_kind(workdir: Path) -> str:
     """The kind a lecture in this folder records, or 'paper' when a lecture exists
     but doesn't record a kind—all lectures predate the kind field. Returns '' only
-    when no lecture file exists at all."""
+    when no lecture file exists at all. A file only counts when its front matter
+    marks it as ppread's: broad.md or research.md are also natural names for the
+    user's own notes, and one of those must not decide a deck's kind."""
     found_lecture = False
     for name in DOC_FILES:
         fields = front_matter(workdir / name)
-        if fields is not None:
+        if is_lecture(fields):
             found_lecture = True
             kind = fields.get("kind", "")
             if kind in MODES:
@@ -763,6 +772,12 @@ def folder_conflict(workdir: Path, meta: dict, slug: str) -> dict | None:
         ident = front_matter(workdir / name)
         if ident is None or same_paper(ident, meta):
             continue
+        # A paper has no research lecture, so a research.md that is not ppread's
+        # is the user's own note, not a resident paper. broad.md and deep.md stay
+        # strict: a lecture would be renamed over them.
+        if name.startswith("research") and meta.get("kind", "paper") == "paper" \
+                and not is_lecture(ident):
+            continue
         held = ident.get("title") or ident.get("arxiv") or ident.get("doi")
         return {"route": "conflict", "slug": slug, "workdir": str(workdir), "meta": meta,
                 "occupant": {"file": name,
@@ -790,7 +805,30 @@ def adopt_local(src: Path, out_override: Path | None, title_override: str,
     and be moved into a second, nested folder."""
     is_pdf = src.suffix.lower() == ".pdf"
     info = pdfinfo(src) if is_pdf else {}
-    kind = kind_override or doc_kind(src.parent) or (pdf_kind(src, info) if is_pdf else "paper")
+    recorded = doc_kind(src.parent)
+    # A lecture speaks for the folder's one source. A second file beside it is not
+    # that document, and letting the lecture claim it would write a chapter's
+    # deep.md from a downloaded paper, or nest a talk deck inside a paper.
+    # Only files of the source's own type are rivals: the user's notes.md or a
+    # supplement beside a lecture are not a second document.
+    others = sorted(p.name for p in src.parent.glob(f"*{src.suffix}") if p.is_file()
+                    and p != src and p.name not in DOC_FILES
+                    and not p.name.startswith(".")) if recorded else []
+    if others:
+        return {"route": "conflict", "workdir": str(src.parent), "path": str(src),
+                "reason": f"{src.parent} already holds a {recorded} lecture and its "
+                          f"source ({', '.join(others)}); {src.name} is a different "
+                          "file in that folder",
+                "resolve": "move the file out of that folder and re-run on it there"}
+    if kind_override and recorded and kind_override != recorded:
+        return {"route": "conflict", "workdir": str(src.parent), "path": str(src),
+                "reason": f"--kind {kind_override} contradicts the {recorded} lecture "
+                          f"already in {src.parent}; re-running would move the file "
+                          "into a second, nested folder",
+                "resolve": "drop --kind to keep this folder's kind, or move the file "
+                           "out of the folder first if it really is a different "
+                           "document"}
+    kind = kind_override or recorded or (pdf_kind(src, info) if is_pdf else "paper")
     if not kind:
         return {"route": "needs-kind", "path": str(src),
                 "reason": "the page size could not be read, so it is unknown whether "
@@ -842,7 +880,7 @@ def adopt_slides(src: Path, out_override: Path | None, title: str, course: str,
     # in this folder rather than mint a second one nested inside it.
     beside = doc_kind(src.parent) == "slides"
     if beside:
-        fm = next((f for f in (front_matter(src.parent / n) for n in DOC_FILES) if f), {})
+        fm = next((f for f in (front_matter(src.parent / n) for n in DOC_FILES) if is_lecture(f)), {})
         course, title = course or fm.get("course", ""), title or fm.get("title", "")
     pages = info.get("Pages", "")
     meta = {"kind": "slides", "title": title, "course": course, "authors": [],
@@ -868,7 +906,14 @@ def adopt_slides(src: Path, out_override: Path | None, title: str, course: str,
         workdir = src.parent / slug
     else:
         workdir = src.parent / course_slug / slug
-    return place(src, workdir, meta, slug, "slides")
+    result = place(src, workdir, meta, slug, "slides")
+    if beside and result.get("route") == "conflict":
+        # The paper-oriented advice (another --title) would land here again.
+        result["resolve"] = (f"this file sits beside the lecture for {fm.get('course', '')!r} "
+                             f"/ {fm.get('title', '')!r}: re-run without --course and "
+                             "--title, or pass exactly those; a different chapter must be "
+                             "moved out of this folder first")
+    return result
 
 
 def place(src: Path, workdir: Path, meta: dict, slug: str, kind: str) -> dict:
@@ -929,8 +974,16 @@ def _holds_file(d: Path) -> bool:
         return False
 
 
+def _has_src(d: Path) -> bool:
+    try:
+        return (d / "src").is_dir()
+    except OSError:
+        return False  # _holds_file already logged the unreadable folder
+
+
 def library_row(d: Path, slug: str) -> dict:
-    fields = next((fm for fm in (front_matter(d / n) for n in DOC_FILES) if fm), {})
+    found = [fm for fm in (front_matter(d / n) for n in DOC_FILES) if fm]
+    fields = next((fm for fm in found if is_lecture(fm)), found[0] if found else {})
     docs = lecture_docs(d)
     return {"slug": slug, "title": fields.get("title", ""), "year": fields.get("year", ""),
             "tier": fields.get("tier", ""), **docs}
@@ -941,14 +994,31 @@ def list_library(root: Path) -> dict:
     lecture folder is a non-hidden directory holding at least one file directly.
     A directory holding only directories is a container: a course, whose chapters
     are listed one level down as course/chapter — except assets/, whose
-    subdirectories hold figures, not sources."""
+    subdirectories hold figures, not sources. A course may also hold loose files
+    (a deck not yet adopted, a syllabus): a folder with chapter subfolders and no
+    lecture of its own is still a course. Only slides chapters make a course: a
+    paper's own subfolder (figs/) must not turn the paper into one. A src/ marks a paper folder even
+    with no file beside it: fetch_eprint unpacks there before source.tex exists,
+    and an e-print with no main .tex never gets one."""
     papers = []
     for d in _subdirs(root) if root.is_dir() else []:
-        if _holds_file(d):
+        if d.name == "assets":
+            continue
+        held, src = _holds_file(d), _has_src(d)
+        # A lecture-less subfolder counts as a chapter only beside no loose file: a
+        # paper's figs/ of landscape figure PDFs looks exactly like a new chapter.
+        chapters = [c for c in _subdirs(d) if c.name not in ("src", "assets")
+                    and _holds_file(c) and (doc_kind(c) == "slides" or not held
+                                            and lecture_docs(c)["kind"] == "slides")]
+        if not (held or src or chapters):
+            continue
+        if src or not chapters or doc_kind(d):
             papers.append(library_row(d, d.name))
-        elif d.name != "assets":
-            papers += [library_row(c, f"{d.name}/{c.name}")
-                       for c in _subdirs(d) if _holds_file(c)]
+        else:
+            # A paper adopted beside a course reading sits at chapter depth too.
+            members = chapters + [c for c in _subdirs(d) if c not in chapters
+                                  and c.name not in ("src", "assets") and doc_kind(c) == "paper"]
+            papers += [library_row(c, f"{d.name}/{c.name}") for c in sorted(members)]
     return {"route": "list", "library": str(root), "papers": papers}
 
 

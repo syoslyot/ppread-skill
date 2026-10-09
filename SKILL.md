@@ -175,6 +175,11 @@ the DOI, then the title. `occupant.file` names the lecture that disagreed. A fol
 holding a source file but no lecture cannot be identified at all, so that is
 reported too.
 
+A conflict with no `occupant` comes from a check that runs before any title is
+compared — a second file beside a lecture's source, or a `--kind` that
+contradicts the folder's lecture. `--title` cannot resolve those; follow the
+result's `resolve` field. Every conflict's `resolve` says what actually works.
+
 **Do not resolve this alone, and never work around it by renaming the folder.**
 Show the user both papers — `occupant` is the resident one, `meta` the incoming
 one — and ask which case it is:

@@ -527,6 +527,28 @@ def check_adopt_kind() -> None:
     assert r["workdir"] == str(root / "a-paper-title") and r["meta"]["kind"] == "paper", r
     assert r["docs"]["kind"] == "paper" and "research" not in r["docs"], r
 
+    # --kind contradicting the lecture beside the file is a conflict, not a nest.
+    r = _adopt(wd / "unknown.pdf", portrait, kind="paper")
+    assert r["route"] == "conflict" and r["workdir"] == str(wd), r
+    assert (wd / "unknown.pdf").exists() and not any(c.is_dir() for c in wd.iterdir()), r
+
+
+def check_list_library_loose_file_in_course() -> None:
+    """A deck not yet adopted sits loose in the course folder; it must not turn
+    the course into one bogus row that hides its adopted chapters."""
+    lib = Path(tempfile.mkdtemp())
+    write_doc(lib / "vlsi-dsp" / "ch01-introduction" / "broad.md",
+              {"kind": "slides", "title": "Ch01 Introduction", "course": "VLSI DSP",
+               "mode": "broad", "lecture_read": "false"})
+    (lib / "vlsi-dsp" / "ch02.pdf").write_bytes(b"%PDF-1.4\n")
+    r = fetch.list_library(lib)
+    assert [row["slug"] for row in r["papers"]] == ["vlsi-dsp/ch01-introduction"], r
+    # A paper adopted from a reading inside the course folder is listed beside it.
+    write_doc(lib / "vlsi-dsp" / "some-paper" / "broad.md", {**A, "mode": "broad"})
+    r = fetch.list_library(lib)
+    assert [row["slug"] for row in r["papers"]] == ["vlsi-dsp/ch01-introduction",
+                                                    "vlsi-dsp/some-paper"], r
+
 
 def check_kind_flags_rejected_on_network_source() -> None:
     orig_argv, orig_stdout = sys.argv, sys.stdout
@@ -597,6 +619,111 @@ def check_search() -> None:
     assert timed_out["reason"] == "TimeoutError", timed_out  # str() of it is empty
 
 
+def check_list_library_eprint_only() -> None:
+    """A paper whose e-print unpacked into src/ but yielded no source.tex holds only
+    a directory. It is a paper folder, not a course: src/ must not be listed as a
+    chapter, and its figure PDFs must not make it look like slides."""
+    lib = Path(tempfile.mkdtemp())
+    (lib / "2401-foo" / "src").mkdir(parents=True)
+    (lib / "2401-foo" / "src" / "fig.pdf").write_bytes(b"%PDF-1.4\n<< /MediaBox [0 0 720 540] >>\n")
+    orig = fetch.pdfinfo
+    fetch.pdfinfo = lambda p: {}
+    try:
+        r = fetch.list_library(lib)
+    finally:
+        fetch.pdfinfo = orig
+    assert [row["slug"] for row in r["papers"]] == ["2401-foo"], r
+    assert r["papers"][0]["kind"] == "paper", r
+
+
+def check_kind_ignores_non_lecture_notes() -> None:
+    """A user's own research.md beside a deck is not a lecture and must not decide
+    the deck's kind; a chapter folder needs a slides deck or lecture to be listed,
+    so a paper's own figs/ subfolder does not turn the paper into a course."""
+    root = Path(tempfile.mkdtemp())
+    (root / "research.md").write_text("# my notes\n", "utf-8")
+    (root / "broad.md").write_text("---\ntags: [todo]\n---\nnotes\n", "utf-8")
+    assert fetch.doc_kind(root) == "", fetch.doc_kind(root)
+    deck = root / "deck.pdf"
+    deck.write_bytes(b"%PDF-1.4\n")
+    r = _adopt(deck, DECK_INFO)
+    assert r["route"] == "needs-title" and r["meta"]["kind"] == "slides", r
+
+    lib = Path(tempfile.mkdtemp())
+    (lib / "mypaper" / "figs").mkdir(parents=True)
+    (lib / "mypaper" / "source.pdf").write_bytes(b"%PDF-1.4\n")
+    (lib / "mypaper" / "figs" / "a.png").write_bytes(b"png")
+    write_doc(lib / "c" / "ch1" / "broad.md", {"kind": "slides", "title": "Ch1", "mode": "broad"})
+    (lib / "c" / "assets" / "x").mkdir(parents=True)
+    (lib / "c" / "assets" / "x.png").write_bytes(b"png")
+    r = fetch.list_library(lib)
+    assert [row["slug"] for row in r["papers"]] == ["c/ch1", "mypaper"], r
+
+
+def check_foreign_pdf_in_lecture_folder() -> None:
+    """A second PDF dropped into a folder that already has a source and a lecture is
+    not that folder's document: neither the slides chapter nor the paper may claim
+    it. And a lecture-less paper's landscape figure PDFs do not make it a course."""
+    root = Path(tempfile.mkdtemp())
+    ch = root / "vlsi-dsp" / "ch01-introduction"
+    write_doc(ch / "broad.md", {"kind": "slides", "title": "Ch01 Introduction",
+                                "course": "VLSI DSP", "mode": "broad"})
+    (ch / "deck.pdf").write_bytes(b"%PDF-1.4\n")
+    (ch / "paper.pdf").write_bytes(b"%PDF-1.4\n")
+    r = _adopt(ch / "paper.pdf", {"Page size": "612 x 792 pts", "Title": "A Paper"})
+    assert r["route"] == "conflict" and "deck.pdf" in r["reason"], r
+    assert (ch / "paper.pdf").exists() and not any(c.is_dir() for c in ch.iterdir()), r
+    # The folder's own deck still re-runs in place.
+    r = _adopt(ch / "deck.pdf", DECK_INFO)
+    assert r["route"] == "conflict", r  # paper.pdf is still there, unexplained
+
+    pa = root / "a-paper"
+    write_doc(pa / "broad.md", {**A, "mode": "broad"})
+    (pa / "a.pdf").write_bytes(b"%PDF-1.4\n")
+    (pa / "talk.pdf").write_bytes(b"%PDF-1.4\n")
+    r = _adopt(pa / "talk.pdf", DECK_INFO)
+    assert r["route"] == "conflict" and (pa / "talk.pdf").exists(), r
+
+    lib = Path(tempfile.mkdtemp())
+    (lib / "b-paper" / "figs").mkdir(parents=True)
+    (lib / "b-paper" / "b.pdf").write_bytes(b"%PDF-1.4\n")
+    (lib / "b-paper" / "figs" / "fig1.pdf").write_bytes(b"%PDF-1.4\n<< /MediaBox [0 0 720 540] >>\n")
+    orig = fetch.pdfinfo
+    fetch.pdfinfo = lambda p: {}
+    try:
+        r = fetch.list_library(lib)
+    finally:
+        fetch.pdfinfo = orig
+    assert [row["slug"] for row in r["papers"]] == ["b-paper"], r
+
+
+def check_user_notes_are_not_lectures() -> None:
+    """The user's own research.md in a paper folder is not a resident paper, and a
+    slides re-run with a different --title is told how to get out, not sent round."""
+    d = Path(tempfile.mkdtemp())
+    (d / "research.md").write_text("# my notes\n", "utf-8")
+    write_doc(d / "broad.md", {**A, "mode": "broad"})
+    assert fetch.folder_conflict(d, A_META, "s") is None
+    assert fetch.library_row(d, "s")["title"] == "Paper A"
+    # The user's own notes.md beside an adopted source is not a rival source.
+    pd = Path(tempfile.mkdtemp()) / "paper-a"
+    write_doc(pd / "broad.md", {**A, "mode": "broad"})
+    (pd / "paper.pdf").write_bytes(b"%PDF-1.4\n")
+    (pd / "notes.md").write_text("mine\n", "utf-8")
+    r = _adopt(pd / "paper.pdf", {"Page size": "612 x 792 pts"}, title="Paper A")
+    assert r["route"] == "needs-pdf" and r["workdir"] == str(pd), r
+
+    root = Path(tempfile.mkdtemp())
+    src = root / "deck.pdf"
+    src.write_bytes(b"%PDF-1.4\n")
+    r = _adopt(src, DECK_INFO, course="VLSI DSP", title="Ch01 Introduction")
+    wd = Path(r["workdir"])
+    write_doc(wd / "broad.md", {"kind": "slides", "title": "Ch01 Introduction",
+                                "course": "VLSI DSP", "mode": "broad"})
+    r = _adopt(wd / "deck.pdf", DECK_INFO, course="VLSI DSP", title="Ch1 Intro")
+    assert r["route"] == "conflict" and "without --course" in r["resolve"], r
+
+
 CHECKS = [
     check_lecture_docs_and_conflicts,
     check_slides_lecture_state,
@@ -612,6 +739,11 @@ CHECKS = [
     check_graph_authors,
     check_list_library,
     check_list_library_unreadable_dir,
+    check_list_library_eprint_only,
+    check_list_library_loose_file_in_course,
+    check_kind_ignores_non_lecture_notes,
+    check_foreign_pdf_in_lecture_folder,
+    check_user_notes_are_not_lectures,
     check_papers_base,
     check_pdf_kind,
     check_adopt_slides,
