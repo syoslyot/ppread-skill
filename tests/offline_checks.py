@@ -597,6 +597,23 @@ def check_search() -> None:
     assert timed_out["reason"] == "TimeoutError", timed_out  # str() of it is empty
 
 
+def check_list_library_eprint_only() -> None:
+    """A paper whose e-print unpacked into src/ but yielded no source.tex holds only
+    a directory. It is a paper folder, not a course: src/ must not be listed as a
+    chapter, and its figure PDFs must not make it look like slides."""
+    lib = Path(tempfile.mkdtemp())
+    (lib / "2401-foo" / "src").mkdir(parents=True)
+    (lib / "2401-foo" / "src" / "fig.pdf").write_bytes(b"%PDF-1.4\n<< /MediaBox [0 0 720 540] >>\n")
+    orig = fetch.pdfinfo
+    fetch.pdfinfo = lambda p: {}
+    try:
+        r = fetch.list_library(lib)
+    finally:
+        fetch.pdfinfo = orig
+    assert [row["slug"] for row in r["papers"]] == ["2401-foo"], r
+    assert r["papers"][0]["kind"] == "paper", r
+
+
 CHECKS = [
     check_lecture_docs_and_conflicts,
     check_slides_lecture_state,
@@ -612,6 +629,7 @@ CHECKS = [
     check_graph_authors,
     check_list_library,
     check_list_library_unreadable_dir,
+    check_list_library_eprint_only,
     check_papers_base,
     check_pdf_kind,
     check_adopt_slides,

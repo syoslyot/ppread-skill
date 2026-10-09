@@ -929,6 +929,13 @@ def _holds_file(d: Path) -> bool:
         return False
 
 
+def _has_src(d: Path) -> bool:
+    try:
+        return (d / "src").is_dir()
+    except OSError:
+        return False  # _holds_file already logged the unreadable folder
+
+
 def library_row(d: Path, slug: str) -> dict:
     fields = next((fm for fm in (front_matter(d / n) for n in DOC_FILES) if fm), {})
     docs = lecture_docs(d)
@@ -941,10 +948,12 @@ def list_library(root: Path) -> dict:
     lecture folder is a non-hidden directory holding at least one file directly.
     A directory holding only directories is a container: a course, whose chapters
     are listed one level down as course/chapter — except assets/, whose
-    subdirectories hold figures, not sources."""
+    subdirectories hold figures, not sources. A src/ marks a paper folder even
+    with no file beside it: fetch_eprint unpacks there before source.tex exists,
+    and an e-print with no main .tex never gets one."""
     papers = []
     for d in _subdirs(root) if root.is_dir() else []:
-        if _holds_file(d):
+        if _holds_file(d) or _has_src(d):
             papers.append(library_row(d, d.name))
         elif d.name != "assets":
             papers += [library_row(c, f"{d.name}/{c.name}")
