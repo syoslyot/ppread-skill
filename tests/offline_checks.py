@@ -655,6 +655,43 @@ def check_kind_ignores_non_lecture_notes() -> None:
     assert [row["slug"] for row in r["papers"]] == ["c/ch1", "mypaper"], r
 
 
+def check_foreign_pdf_in_lecture_folder() -> None:
+    """A second PDF dropped into a folder that already has a source and a lecture is
+    not that folder's document: neither the slides chapter nor the paper may claim
+    it. And a lecture-less paper's landscape figure PDFs do not make it a course."""
+    root = Path(tempfile.mkdtemp())
+    ch = root / "vlsi-dsp" / "ch01-introduction"
+    write_doc(ch / "broad.md", {"kind": "slides", "title": "Ch01 Introduction",
+                                "course": "VLSI DSP", "mode": "broad"})
+    (ch / "deck.pdf").write_bytes(b"%PDF-1.4\n")
+    (ch / "paper.pdf").write_bytes(b"%PDF-1.4\n")
+    r = _adopt(ch / "paper.pdf", {"Page size": "612 x 792 pts", "Title": "A Paper"})
+    assert r["route"] == "conflict" and "deck.pdf" in r["reason"], r
+    assert (ch / "paper.pdf").exists() and not any(c.is_dir() for c in ch.iterdir()), r
+    # The folder's own deck still re-runs in place.
+    r = _adopt(ch / "deck.pdf", DECK_INFO)
+    assert r["route"] == "conflict", r  # paper.pdf is still there, unexplained
+
+    pa = root / "a-paper"
+    write_doc(pa / "broad.md", {**A, "mode": "broad"})
+    (pa / "a.pdf").write_bytes(b"%PDF-1.4\n")
+    (pa / "talk.pdf").write_bytes(b"%PDF-1.4\n")
+    r = _adopt(pa / "talk.pdf", DECK_INFO)
+    assert r["route"] == "conflict" and (pa / "talk.pdf").exists(), r
+
+    lib = Path(tempfile.mkdtemp())
+    (lib / "b-paper" / "figs").mkdir(parents=True)
+    (lib / "b-paper" / "b.pdf").write_bytes(b"%PDF-1.4\n")
+    (lib / "b-paper" / "figs" / "fig1.pdf").write_bytes(b"%PDF-1.4\n<< /MediaBox [0 0 720 540] >>\n")
+    orig = fetch.pdfinfo
+    fetch.pdfinfo = lambda p: {}
+    try:
+        r = fetch.list_library(lib)
+    finally:
+        fetch.pdfinfo = orig
+    assert [row["slug"] for row in r["papers"]] == ["b-paper"], r
+
+
 CHECKS = [
     check_lecture_docs_and_conflicts,
     check_slides_lecture_state,
@@ -673,6 +710,7 @@ CHECKS = [
     check_list_library_eprint_only,
     check_list_library_loose_file_in_course,
     check_kind_ignores_non_lecture_notes,
+    check_foreign_pdf_in_lecture_folder,
     check_papers_base,
     check_pdf_kind,
     check_adopt_slides,

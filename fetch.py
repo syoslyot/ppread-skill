@@ -794,6 +794,17 @@ def adopt_local(src: Path, out_override: Path | None, title_override: str,
     is_pdf = src.suffix.lower() == ".pdf"
     info = pdfinfo(src) if is_pdf else {}
     recorded = doc_kind(src.parent)
+    # A lecture speaks for the folder's one source. A second file beside it is not
+    # that document, and letting the lecture claim it would write a chapter's
+    # deep.md from a downloaded paper, or nest a talk deck inside a paper.
+    others = sorted(p.name for p in src.parent.glob("*") if p.is_file() and p != src
+                    and p.name not in DOC_FILES and not p.name.startswith(".")) if recorded else []
+    if others:
+        return {"route": "conflict", "workdir": str(src.parent), "path": str(src),
+                "reason": f"{src.parent} already holds a {recorded} lecture and its "
+                          f"source ({', '.join(others)}); {src.name} is a different "
+                          "file in that folder",
+                "resolve": "move the file out of that folder and re-run on it there"}
     if kind_override and recorded and kind_override != recorded:
         return {"route": "conflict", "workdir": str(src.parent), "path": str(src),
                 "reason": f"--kind {kind_override} contradicts the {recorded} lecture "
@@ -971,8 +982,11 @@ def list_library(root: Path) -> dict:
         if d.name == "assets":
             continue
         held, src = _holds_file(d), _has_src(d)
+        # A lecture-less subfolder counts as a chapter only beside no loose file: a
+        # paper's figs/ of landscape figure PDFs looks exactly like a new chapter.
         chapters = [c for c in _subdirs(d) if c.name not in ("src", "assets")
-                    and _holds_file(c) and lecture_docs(c)["kind"] == "slides"]
+                    and _holds_file(c) and (doc_kind(c) == "slides" or not held
+                                            and lecture_docs(c)["kind"] == "slides")]
         if not (held or src or chapters):
             continue
         if src or not chapters or doc_kind(d):
