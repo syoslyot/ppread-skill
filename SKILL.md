@@ -386,7 +386,9 @@ one seed per setting and the largest gap is 0.3 BLEU" is.
 **Explain what the paper assumes, not what it says.** Restating a paragraph in
 easier words is not explanation. Useful explanation answers: why this step and not
 the obvious alternative, what breaks without it, which earlier work it is arguing
-against, what the authors took for granted.
+against, what the authors took for granted. Explain a mechanism from its parts and a
+step-by-step trace with real values — never with an "X is a tool for Y" definition,
+and never by dropping the term; `lecture-format.md` 〈解說的具體度〉 has the full rule.
 
 **Every technical term gets 中英並列 on first use** — `注意力機制（attention
 mechanism）` — then the English alone afterwards.
