@@ -388,7 +388,7 @@ easier words is not explanation. Useful explanation answers: why this step and n
 the obvious alternative, what breaks without it, which earlier work it is arguing
 against, what the authors took for granted. Explain a mechanism from its parts and a
 step-by-step trace with real values — never with an "X is a tool for Y" definition,
-and never by dropping the term; `lecture-format.md` 〈解說的具體度〉 has the full rule.
+and never by dropping the term. `lecture-format.md` and `slides-format.md` 〈解說的具體度〉 have the full rule. Values not taken from the source are labelled as such, and a learned model is traced as data, never with invented numbers.
 
 **Every technical term gets 中英並列 on first use** — `注意力機制（attention
 mechanism）` — then the English alone afterwards.
