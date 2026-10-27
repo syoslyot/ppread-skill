@@ -71,7 +71,7 @@ Keep title `### BLEU 與 COMET` and 卡在哪裡／去哪裡補 as they are. Rep
 - Numbered trace (此例非論文所有), 參考譯文 `the cat is on the mat`:
   1. 譯文 `the cat sat on the mat`：6 個 unigram 中 `the`×2、`cat`、`on`、`mat` 在參考中有 → 5/6。
   2. 同一句的 bigram：`the cat`、`cat sat`、`sat on`、`on the`、`the mat` 中命中 `the cat`、`on the`、`the mat` → 3/5。
-  3. 意思相同的改寫 `a kitten is on the rug`：unigram 只命中 `is`、`on`、`the` → 3/6。分數掉了一半，意思沒變——這就是「對同義改寫不敏感」的具體樣子。
+  3. 意思相同的改寫 `a kitten is on the rug`：unigram 只命中 `is`、`on`、`the` → 3/6。分數掉了一半，意思幾乎相同——這就是「對同義改寫不敏感」的具體樣子。
 - COMET 組成與流程: 原文、系統譯文、參考譯文三句一起送進預訓練的多語言編碼器，各得一個句向量；組合三個向量後送進前饋網路，輸出一個分數；這個網路是拿人工評分當目標訓練出來的，所以步驟 3 那種改寫不會像 BLEU 一樣被重罰。
 - 不必懂: brevity penalty 與 1–4-gram 幾何平均的算式；COMET 的編碼器架構。
 
@@ -89,7 +89,7 @@ grep -n 'BLEU 是 n-gram 重疊率' lecture-format.md
 grep -n '具體不等於更深\|此例非論文所有\|功能性定義\|a kitten is on the rug' lecture-format.md
 grep -nE '是一種.{0,20}(工具|機制|技術|指標)|可以用來|好用工具' lecture-format.md
 ```
-Expected: `lecture-format.md` ≥ 3, `SKILL.md` 1; BLEU grep empty; all four phrases found; the last grep hits only 反例 lines.
+Expected: `lecture-format.md` ≥ 2 (section heading + 反例 bullet), `SKILL.md` 1; BLEU grep empty; all four phrases found; the last grep hits only the pliers 反 line in〈解說的具體度〉and the 反例 bullet.
 
 - [ ] **Step 6: Commit**
 
@@ -143,7 +143,7 @@ grep -n '的技術 |' slides-format.md
 grep -n '具體不等於更深\|此例非投影片所有\|y(1)=11' slides-format.md
 grep -nE '是一種.{0,20}(工具|機制|技術|指標)|可以用來|好用工具' slides-format.md
 ```
-Expected: ≥ 2; TCM grep empty; all three found; last grep hits only 反例 lines.
+Expected: ≥ 2 (section heading + 反例 bullet); TCM grep empty; all three found; last grep hits only the pliers 反 line and the 反例 bullet.
 
 - [ ] **Step 6: Commit**
 
@@ -159,14 +159,16 @@ git commit   # subject: docs(format): require parts-and-trace explanations in sl
 **Files:**
 - No source changes. Output goes to the session scratchpad.
 
-- [ ] **Step 1: Deploy**
+**Executed by the controller, not a subagent:** ppread's Step 1 stops for the user's confirmation, which a subagent cannot obtain. The live skill at `~/.claude/skills/ppread/` is not touched before merge.
 
-Run: `./deploy.sh`
-Expected: `deployed -> /home/wassup/.claude/skills/ppread`; `diff lecture-format.md ~/.claude/skills/ppread/lecture-format.md` empty.
+- [ ] **Step 1: Deploy to a scratch skills dir**
+
+Run: `CLAUDE_SKILLS_DIR=<scratchpad>/skills ./deploy.sh`
+Expected: `deployed -> <scratchpad>/skills/ppread`; `diff lecture-format.md <scratchpad>/skills/ppread/lecture-format.md` empty.
 
 - [ ] **Step 2: Run on the repo's standard test paper**
 
-`/ppread --broad 1706.03762`, with `fetch.py --out <scratchpad dir>` so nothing lands in the user's library.
+Follow `<scratchpad>/skills/ppread/SKILL.md` for `--broad 1706.03762`, calling that copy's `fetch.py` with `--out <scratchpad>/papers` so nothing lands in the user's library.
 
 - [ ] **Step 3: Check**
 
