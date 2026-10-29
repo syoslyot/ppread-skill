@@ -344,8 +344,9 @@ Read `lecture-format.md` (same directory): the「共通規則」part, plus「導
 「通讀文件」or「精讀文件」for the mode being written. Follow it literally.
 
 **Prerequisites live once.** The lowest finished lecture in primer → broad → deep
-owns〈讀懂它需要先知道的〉; higher ones link to it with a relative link. With no
-lower one finished, the lecture writes its own.
+owns〈讀懂它需要先知道的〉; higher ones link to it with a relative link — but only
+if that file actually has the section (an old-contract `broad.md` may not). With
+no such lecture, the lecture writes its own.
 
 ### 導讀 — single writer
 
@@ -364,41 +365,47 @@ hidden from `--list` and the folder checks; part numbers are two digits, 01–99
 1. **Header.** Write `00-header.md`: front matter (`mode` set, `lecture_read:
    false`), the header block, and〈讀懂它需要先知道的〉when this lecture owns it —
    else the one line linking to the lecture that does.
-2. **Briefs.** For each part of the Step 1 plan write `brief-NN.md`: the section
+2. **Briefs.** For each part of the Step 1 plan write `brief-NN.tmp.md`: the section
    range; the source path (`source_path`, or `.<mode>.parts/source.md`); which
    `lecture-format.md` parts to read; the terms it owns (explain fully); the terms
    owned elsewhere, with where (link, never re-explain); the verified outside
    papers it may cite, copied from `context.json` (nothing else); the figure paths
-   for its sections; its output name `NN-<slug>.md`.
+   for its sections; its output name `NN-<slug>.md`. Only when every brief is
+   written, rename them all to `brief-NN.md` — that set of renames marks the plan
+   complete, and `--assemble` counts only `brief-NN.md`.
 3. **Writers.** Dispatch one writer per brief with the Agent tool, all in a single
    message so they run in parallel, with no model override so they run on this
    session's model. Each writer's prompt says: read this file's Discipline,
    `lecture-format.md`'s「共通規則」and the parts its brief names, its brief and its
    source range; write `NN-<slug>.tmp.md` one `##` section per pass; never touch the
-   network or any web tool and never run `fetch.py` except to read files; name no
+   network or any web tool and never run `fetch.py`; name no
    outside paper the brief does not list; write no front matter, whole-paper
    sections or questions; when its last unit is written, rename the file to
    `NN-<slug>.md` — that rename is the part's completion signal.
 4. **Checker.** When every writer has returned, dispatch one checker agent: it
    re-computes every numbered trace and checks every load-bearing number and its
    provenance against the source, may only correct arithmetic and provenance in
-   place, and reports what it changed — relay that in one line.
+   place, never touches the network or runs `fetch.py`, and reports what it
+   changed — relay that in one line.
 5. **Assemble.**
    ```bash
    python3 ~/.claude/skills/ppread/fetch.py --assemble "<workdir>" <mode>
    ```
    `assembled` → `<mode>.part.md` holds the header and every part in order.
    `assemble-incomplete` → re-dispatch the writers of the briefs in `missing`,
-   then redo steps 4–5. `assemble-unavailable` → report `reason` and stop.
+   then redo steps 4–5; a part missing a second time you write yourself (the
+   fallback below). `assemble-unavailable` → report `reason` and stop.
 6. **Whole-paper sections.** Append to `<mode>.part.md`, one `##` per pass, the
    sections that need the whole paper, reading `context.json`: 通讀 —
    〈作者自述的限制〉,〈它在研究脈絡中的位置〉,〈延伸閱讀〉; 精讀 —〈論證鏈〉,
    〈主張與證據〉,〈設計決策〉. Then Step 4.
 
-**Resume** (`.<mode>.parts/` exists): read `context.json` and the briefs. Continue
-from the first step whose output is missing — no `00-header.md` → step 1, no
-briefs → step 2. Otherwise delete any leftover `.tmp.md`, re-dispatch only the
-briefs with no finished part, then redo steps 4–6. Re-assembling overwrites
+**Resume** (`.<mode>.parts/` exists): Steps 1–2 still run, Step 2 making only the
+calls `context.json` lacks; then continue here from the first step whose output
+is missing. No `00-header.md` → step 1. Any `brief-*.tmp.md`, or no `brief-NN.md`
+→ delete the tmp briefs and redo step 2; otherwise the existing briefs are the
+plan of record. Then delete any leftover part `.tmp.md`, re-dispatch only the
+briefs with no finished part, and redo steps 4–6. Re-assembling overwrites
 `<mode>.part.md`, discarding the interrupted run's whole-paper sections; step 6
 rewrites them from `context.json`. No network call is repeated.
 
@@ -459,7 +466,8 @@ The same state is visible in Obsidian through `papers.base` at the library root.
 ## Discipline
 
 These are the rules that decide whether a lecture is worth reading. They bind
-every agent that writes or checks any part of it.
+every agent that writes or checks any part of it. Only the orchestrator touches
+the network.
 
 **Never reconstruct a formula you cannot actually see.** On the PDF route,
 extraction routinely destroys superscripts, fractions and summation limits —
