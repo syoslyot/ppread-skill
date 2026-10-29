@@ -791,8 +791,28 @@ def check_parts_dir_hidden() -> None:
     assert r["route"] != "conflict", r
 
 
+def check_limitations() -> None:
+    d = Path(tempfile.mkdtemp()); (d / "src").mkdir()
+    (d / "src" / "main.tex").write_text(
+        "\\section{Method}\nWe propose X.\n"
+        "% We leave this for future work.\n"
+        "\\section{Discussion}\nOur evaluation is small. Scaling remains\n"
+        "unclear for larger graphs. Results are good.\n", "utf-8")
+    r = fetch.limitations(d)
+    assert r["route"] == "limitations"
+    assert [h["sentence"] for h in r["hits"]] == [
+        "Scaling remains unclear for larger graphs."]
+    assert r["hits"][0]["section"] == "Discussion" and r["hits"][0]["file"] == "main.tex"
+    assert r["hits"][0]["line"] == 5
+    e = Path(tempfile.mkdtemp()); (e / ".broad.parts").mkdir()
+    (e / ".broad.parts" / "source.md").write_text("A. Little is known about B. C.", "utf-8")
+    assert [h["sentence"] for h in fetch.limitations(e)["hits"]] == ["Little is known about B."]
+    assert fetch.limitations(Path(tempfile.mkdtemp()))["route"] == "limitations-unavailable"
+
+
 CHECKS = [
     check_assemble,
+    check_limitations,
     check_finish,
     check_parts_dir_hidden,
     check_primer_state,

@@ -766,6 +766,74 @@ def finish(workdir: Path, mode: str) -> dict:
     return {"route": "finished", "path": str(out)}
 
 
+LIMITATION_PHRASES = (
+    "future work", "future research", "remains unclear", "remains poorly understood",
+    "has not been examined", "limited evidence", "little is known", "is left for",
+    "we leave", "beyond the scope", "limitation", "to our knowledge",
+    "does not address", "not yet")
+_SECTION_RE = re.compile(r"^\s*\\(?:sub)*section\*?\{(.*)\}")
+
+
+def _limitation_hits(text: str, file: str, latex: bool) -> list[dict]:
+    hits, section, para = [], "", []
+
+    def flush() -> None:
+        if not para:
+            return
+        joined, starts = "", []
+        for no, s in para:
+            starts.append((len(joined), no))
+            joined += s + " "
+        for m in re.finditer(r"\S.*?(?:[.!?](?=\s|$)|$)", joined, re.S):
+            s = " ".join(m.group().split())
+            low = s.lower()
+            if s and any(p in low for p in LIMITATION_PHRASES):
+                line = [no for off, no in starts if off <= m.start()][-1]
+                hits.append({"sentence": s, "section": section, "file": file, "line": line})
+        para.clear()
+
+    for no, raw in enumerate(text.splitlines(), 1):
+        if latex and raw.lstrip().startswith("%"):
+            continue
+        m = _SECTION_RE.match(raw) if latex else None
+        if m:
+            flush()
+            section = " ".join(m.group(1).split())
+        elif raw.strip():
+            para.append((no, raw.strip()))
+        else:
+            flush()
+    flush()
+    return hits
+
+
+def limitations(workdir: Path) -> dict:
+    """Sentences carrying a limitation phrase, verbatim, from the best source on
+    disk: LaTeX, then the work dir's source.md, then the folder's PDF."""
+    tex = sorted((workdir / "src").rglob("*.tex")) if (workdir / "src").is_dir() else []
+    if tex:
+        hits = []
+        for f in tex:
+            hits += _limitation_hits(f.read_text("utf-8", errors="replace"),
+                                     f.relative_to(workdir / "src").as_posix(), True)
+        return {"route": "limitations", "source": str(workdir / "src"), "hits": hits}
+    for md in sorted(workdir.glob(".*.parts/source.md")):
+        return {"route": "limitations", "source": str(md),
+                "hits": _limitation_hits(md.read_text("utf-8", errors="replace"), md.name, False)}
+    pdfs = sorted(workdir.glob("*.pdf"))
+    if pdfs and shutil.which("pdftotext"):
+        try:
+            out = subprocess.run(["pdftotext", "-layout", str(pdfs[0]), "-"],
+                                 capture_output=True, text=True, timeout=60).stdout
+        except Exception as e:
+            log(f"  pdftotext: {e}")
+            return {"route": "limitations-unavailable", "reason": f"pdftotext failed: {e}"}
+        return {"route": "limitations", "source": str(pdfs[0]),
+                "hits": _limitation_hits(out, pdfs[0].name, False)}
+    return {"route": "limitations-unavailable",
+            "reason": "no src/*.tex, no source.md, and no PDF readable with pdftotext"}
+
+
 def _norm_arxiv(v: str) -> str:
     return re.sub(r"^arxiv:|v\d+$", "", (v or "").strip().lower())
 
@@ -1196,6 +1264,8 @@ def main() -> int:
                          "MODE.part.md")
     ap.add_argument("--finish", nargs=2, metavar=("WORKDIR", "MODE"),
                     help="rename MODE.part.md to MODE.md and delete .MODE.parts")
+    ap.add_argument("--limitations", metavar="WORKDIR",
+                    help="author-stated limitation sentences in WORKDIR's source, verbatim")
     ap.add_argument("--list", nargs="?", const="", metavar="DIR",
                     help="list paper folders and the state of their lectures; "
                          "defaults to the configured library")
@@ -1219,6 +1289,11 @@ def main() -> int:
             log(f"--limit must be between 1 and {SEARCH_MAX}")
             return 2
         print(json.dumps(search(args.search, args.since, args.limit),
+                         ensure_ascii=False, indent=2))
+        return 0
+
+    if args.limitations:
+        print(json.dumps(limitations(Path(args.limitations).expanduser()),
                          ensure_ascii=False, indent=2))
         return 0
 
