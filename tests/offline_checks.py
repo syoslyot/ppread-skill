@@ -742,7 +742,59 @@ def check_primer_state() -> None:
     assert "primer" not in fetch.lecture_docs(s)
 
 
+def check_assemble() -> None:
+    d = Path(tempfile.mkdtemp()); p = d / ".broad.parts"; p.mkdir()
+    (p / "00-header.md").write_text("HEAD\n", "utf-8")
+    for n in ("01", "02"):
+        (p / f"brief-{n}.md").write_text("b", "utf-8")
+    (p / "02-results.md").write_text("TWO\n", "utf-8")
+    (p / "01-intro.tmp.md").write_text("half", "utf-8")
+    r = fetch.assemble(d, "broad")
+    assert r["route"] == "assemble-incomplete" and r["missing"] == ["brief-01.md"], r
+    assert not (d / "broad.part.md").exists()
+    (p / "01-intro.tmp.md").rename(p / "01-intro.md")
+    (p / "01-intro.md").write_text("ONE\n", "utf-8")
+    r = fetch.assemble(d, "broad")
+    assert r["route"] == "assembled", r
+    first = (d / "broad.part.md").read_text("utf-8")
+    assert first.index("HEAD") < first.index("ONE") < first.index("TWO")
+    assert "half" not in first and "\nb" not in first   # briefs and tmp never assembled
+    (d / "broad.part.md").write_text(first + "STEP7\n", "utf-8")
+    fetch.assemble(d, "broad")                           # rerun after interruption
+    assert (d / "broad.part.md").read_text("utf-8") == first
+    assert p.is_dir()                                    # assemble never deletes
+    assert fetch.assemble(Path(tempfile.mkdtemp()), "broad")["route"] == "assemble-unavailable"
+
+
+def check_finish() -> None:
+    d = Path(tempfile.mkdtemp())
+    (d / ".deep.parts").mkdir(); (d / "deep.part.md").write_text("x", "utf-8")
+    assert fetch.finish(d, "deep")["route"] == "finished"
+    assert (d / "deep.md").read_text("utf-8") == "x"
+    assert not (d / "deep.part.md").exists() and not (d / ".deep.parts").exists()
+    e = Path(tempfile.mkdtemp()); (e / "primer.part.md").write_text("y", "utf-8")
+    assert fetch.finish(e, "primer")["route"] == "finished"   # no parts dir: rename only
+    assert fetch.finish(e, "primer")["route"] == "finish-unavailable"
+
+
+def check_parts_dir_hidden() -> None:
+    lib = Path(tempfile.mkdtemp()); d = lib / "paper-a"
+    write_doc(d / "broad.md", {**A, "mode": "broad"})
+    (d / "paper.pdf").write_bytes(b"%PDF-1.4\n")
+    p = d / ".deep.parts"; p.mkdir()
+    (p / "source.md").write_text("text", "utf-8"); (p / "x.pdf").write_bytes(b"%PDF")
+    rows = fetch.list_library(lib)
+    slugs = [r["slug"] for r in rows["papers"]]
+    assert slugs == ["paper-a"], rows
+    assert rows["papers"][0]["deep"] == "partial", rows
+    r = _adopt(d / "paper.pdf", {"Page size": "612 x 792 pts", "Title": "Paper A"})
+    assert r["route"] != "conflict", r
+
+
 CHECKS = [
+    check_assemble,
+    check_finish,
+    check_parts_dir_hidden,
     check_primer_state,
     check_lecture_docs_and_conflicts,
     check_slides_lecture_state,

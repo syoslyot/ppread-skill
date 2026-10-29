@@ -574,7 +574,7 @@ def expand(path: Path, root: Path, seen: set[Path], depth: int = 0) -> str:
     return INPUT_RE.sub(sub, text)
 
 
-def assemble(root: Path, strip_comments: bool) -> str | None:
+def assemble_latex(root: Path, strip_comments: bool) -> str | None:
     main = find_main_tex(root)
     if main is None:
         return None
@@ -730,6 +730,40 @@ def lecture_docs(workdir: Path, kind: str = "") -> dict:
         else:
             docs[mode] = "read" if fields.get("lecture_read", "").lower() == "true" else "unread"
     return docs
+
+
+def assemble(workdir: Path, mode: str) -> dict:
+    """Join header and finished sections of <workdir>/.<mode>.parts into
+    <mode>.part.md. Rebuilt from scratch on every call, so an interrupted run
+    or later hand edits to the .part file never accumulate."""
+    parts = workdir / f".{mode}.parts"
+    header = parts / "00-header.md"
+    if not header.is_file():
+        return {"route": "assemble-unavailable",
+                "reason": f"no {header.relative_to(workdir)}"}
+    names = sorted(n for n in os.listdir(parts) if n.endswith(".md"))
+    done = [n for n in names if re.fullmatch(r"\d\d-.+\.md", n)
+            and not n.endswith(".tmp.md") and n != "00-header.md"]
+    missing = [n for n in names if re.fullmatch(r"brief-\d\d\.md", n)
+               and not any(d.startswith(n[6:8] + "-") for d in done)]
+    if missing:
+        return {"route": "assemble-incomplete", "missing": missing}
+    body = [(parts / n).read_text("utf-8").strip("\n") for n in ["00-header.md"] + done]
+    tmp = workdir / f".{mode}.assemble.tmp"
+    tmp.write_text("\n\n".join(body) + "\n", "utf-8")
+    out = workdir / f"{mode}.part.md"
+    os.replace(tmp, out)
+    return {"route": "assembled", "path": str(out), "parts": len(done)}
+
+
+def finish(workdir: Path, mode: str) -> dict:
+    part = workdir / f"{mode}.part.md"
+    if not part.is_file():
+        return {"route": "finish-unavailable", "reason": f"no {part.name}"}
+    out = workdir / f"{mode}.md"
+    os.replace(part, out)
+    shutil.rmtree(workdir / f".{mode}.parts", ignore_errors=True)
+    return {"route": "finished", "path": str(out)}
 
 
 def _norm_arxiv(v: str) -> str:
@@ -1157,6 +1191,11 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=SEARCH_LIMIT, metavar="N",
                     help=f"with --search: at most N papers (default {SEARCH_LIMIT}, "
                          f"max {SEARCH_MAX})")
+    ap.add_argument("--assemble", nargs=2, metavar=("WORKDIR", "MODE"),
+                    help="join the finished sections in WORKDIR/.MODE.parts into "
+                         "MODE.part.md")
+    ap.add_argument("--finish", nargs=2, metavar=("WORKDIR", "MODE"),
+                    help="rename MODE.part.md to MODE.md and delete .MODE.parts")
     ap.add_argument("--list", nargs="?", const="", metavar="DIR",
                     help="list paper folders and the state of their lectures; "
                          "defaults to the configured library")
@@ -1182,6 +1221,15 @@ def main() -> int:
         print(json.dumps(search(args.search, args.since, args.limit),
                          ensure_ascii=False, indent=2))
         return 0
+
+    for flag, fn in (("assemble", assemble), ("finish", finish)):
+        if getattr(args, flag):
+            wd, mode = getattr(args, flag)
+            if mode not in MODES["paper"]:
+                log(f"--{flag} MODE must be one of {', '.join(MODES['paper'])}")
+                return 2
+            print(json.dumps(fn(Path(wd).expanduser(), mode), ensure_ascii=False, indent=2))
+            return 0
 
     if args.list is not None:
         root = Path(args.list).expanduser() if args.list else resolve_out(None)[0]
@@ -1315,7 +1363,7 @@ def main() -> int:
         workdir.mkdir(parents=True, exist_ok=True)
         kind2, path = fetch_eprint(meta["arxiv_id"], workdir)
         if kind2 == "latex" and path is not None:
-            text = assemble(path, strip_comments=not args.keep_comments)
+            text = assemble_latex(path, strip_comments=not args.keep_comments)
             if text:
                 out = workdir / "source.tex"
                 out.write_text(text, "utf-8")
