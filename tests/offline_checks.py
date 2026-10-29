@@ -31,12 +31,12 @@ def write_doc(path: Path, fields: dict) -> None:
 def check_lecture_docs_and_conflicts() -> None:
     d = Path(tempfile.mkdtemp())
     assert fetch.lecture_docs(d) == {"kind": "paper", "legacy": False,
-                                     "broad": "absent", "deep": "absent"}
+                                     "primer": "absent", "broad": "absent", "deep": "absent"}
 
     write_doc(d / "broad.md", {**A, "mode": "broad", "lecture_read": "true"})
     write_doc(d / "deep.part.md", {**A, "mode": "deep", "lecture_read": "false"})
     assert fetch.lecture_docs(d) == {"kind": "paper", "legacy": False,
-                                     "broad": "read", "deep": "partial"}
+                                     "primer": "absent", "broad": "read", "deep": "partial"}
     assert fetch.folder_conflict(d, A_META, "s") is None
     c = fetch.folder_conflict(d, B_META, "s")
     assert c["route"] == "conflict" and c["occupant"]["file"] == "broad.md", c
@@ -50,14 +50,14 @@ def check_lecture_docs_and_conflicts() -> None:
     write_doc(e / "deep.md", {"title": "Paper B", "arxiv": "2222.22222",
                               "mode": "deep", "lecture_read": "false"})
     assert fetch.lecture_docs(e) == {"kind": "paper", "legacy": False,
-                                     "broad": "unread", "deep": "unread"}
+                                     "primer": "absent", "broad": "unread", "deep": "unread"}
     c = fetch.folder_conflict(e, A_META, "s")
     assert c and c["occupant"]["file"] == "deep.md", c
 
     f = Path(tempfile.mkdtemp())
     write_doc(f / "lecture.md", A)
     assert fetch.lecture_docs(f) == {"kind": "paper", "legacy": True,
-                                     "broad": "absent", "deep": "absent"}
+                                     "primer": "absent", "broad": "absent", "deep": "absent"}
     assert fetch.folder_conflict(f, A_META, "s") is None
     assert fetch.folder_conflict(f, B_META, "s")["occupant"]["file"] == "lecture.md"
 
@@ -201,13 +201,13 @@ def check_list_library() -> None:
     assert r["route"] == "list" and r["library"] == str(lib)
     assert r["papers"] == [
         {"slug": "a-read", "kind": "paper", "title": "Paper A", "year": "2017", "tier": "1",
-         "broad": "read", "deep": "unread", "legacy": False},
+         "primer": "absent", "broad": "read", "deep": "unread", "legacy": False},
         {"slug": "b-legacy", "kind": "paper", "title": "Legacy", "year": "2016", "tier": "6",
-         "broad": "absent", "deep": "absent", "legacy": True},
+         "primer": "absent", "broad": "absent", "deep": "absent", "legacy": True},
         {"slug": "c-source-only", "kind": "paper", "title": "", "year": "", "tier": "",
-         "broad": "absent", "deep": "absent", "legacy": False},
+         "primer": "absent", "broad": "absent", "deep": "absent", "legacy": False},
         {"slug": "d-partial", "kind": "paper", "title": "Partial", "year": "", "tier": "",
-         "broad": "partial", "deep": "absent", "legacy": False},
+         "primer": "absent", "broad": "partial", "deep": "absent", "legacy": False},
         {"slug": "vlsi-dsp/ch01-introduction", "kind": "slides", "title": "Ch01 Introduction",
          "year": "2026", "tier": "6", "broad": "unread", "deep": "absent",
          "research": "absent", "legacy": False},
@@ -724,7 +724,26 @@ def check_user_notes_are_not_lectures() -> None:
     assert r["route"] == "conflict" and "without --course" in r["resolve"], r
 
 
+def check_primer_state() -> None:
+    d = Path(tempfile.mkdtemp())
+    assert fetch.lecture_docs(d) == {"kind": "paper", "legacy": False,
+        "primer": "absent", "broad": "absent", "deep": "absent"}
+    # Folder finished before this change: old broad + deep, no primer.
+    write_doc(d / "broad.md", {**A, "mode": "broad", "lecture_read": "true"})
+    write_doc(d / "deep.md", {**A, "mode": "deep", "lecture_read": "false"})
+    docs = fetch.lecture_docs(d)
+    assert (docs["primer"], docs["broad"], docs["deep"]) == ("absent", "read", "unread")
+    # A hidden work directory alone means in progress.
+    (d / ".primer.parts").mkdir()
+    assert fetch.lecture_docs(d)["primer"] == "partial"
+    assert "primer.md" in fetch.DOC_FILES and "primer.part.md" in fetch.DOC_FILES
+    s = Path(tempfile.mkdtemp())
+    write_doc(s / "broad.md", {**A, "kind": "slides", "mode": "broad"})
+    assert "primer" not in fetch.lecture_docs(s)
+
+
 CHECKS = [
+    check_primer_state,
     check_lecture_docs_and_conflicts,
     check_slides_lecture_state,
     check_same_paper_course,

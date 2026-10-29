@@ -651,9 +651,9 @@ def pdf_kind(path: Path, info: dict | None = None) -> str:
 # paper than the source lying next to it, and nothing in either file says so.
 
 
-DOC_FILES = ("broad.md", "deep.md", "research.md", "broad.part.md", "deep.part.md",
-             "research.part.md", "lecture.md")
-MODES = {"paper": ("broad", "deep"), "slides": ("broad", "deep", "research")}
+DOC_FILES = ("primer.md", "broad.md", "deep.md", "research.md", "primer.part.md",
+             "broad.part.md", "deep.part.md", "research.part.md", "lecture.md")
+MODES = {"paper": ("primer", "broad", "deep"), "slides": ("broad", "deep", "research")}
 
 
 def front_matter(f: Path) -> dict | None:
@@ -714,13 +714,14 @@ def lecture_docs(workdir: Path, kind: str = "") -> dict:
     """Which lectures a folder holds and how far each has got. A lecture is written
     as <mode>.part.md and renamed only once its last section is done, so a .part
     file means unfinished even when a finished file of that mode also exists — a
-    regeneration in progress is not done. Which modes exist depends on the kind:
+    regeneration in progress is not done. The hidden <mode>.parts directory, where
+    sections are written before assembly, counts the same. Which modes exist depends on the kind:
     a caller that already decided it passes it, otherwise the folder says."""
     if kind not in MODES:
         kind = doc_kind(workdir) or source_kind(workdir)
     docs = {"kind": kind, "legacy": (workdir / "lecture.md").is_file()}
     for mode in MODES[kind]:
-        if (workdir / f"{mode}.part.md").is_file():
+        if (workdir / f"{mode}.part.md").is_file() or (workdir / f".{mode}.parts").is_dir():
             docs[mode] = "partial"
             continue
         fields = front_matter(workdir / f"{mode}.md")
