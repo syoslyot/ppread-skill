@@ -808,6 +808,25 @@ def check_limitations() -> None:
     (e / ".broad.parts" / "source.md").write_text("A. Little is known about B. C.", "utf-8")
     assert [h["sentence"] for h in fetch.limitations(e)["hits"]] == ["Little is known about B."]
     assert fetch.limitations(Path(tempfile.mkdtemp()))["route"] == "limitations-unavailable"
+    c = Path(tempfile.mkdtemp()); (c / "src").mkdir()
+    (c / "src" / "a.tex").write_text(
+        "Fine. % future work here\nGain is 5\\%, not yet proven.\n", "utf-8")
+    assert [h["sentence"] for h in fetch.limitations(c)["hits"]] == [
+        "Gain is 5\\%, not yet proven."]
+    p = Path(tempfile.mkdtemp()); (p / "x.pdf").write_bytes(b"%PDF")
+    ow, orun = fetch.shutil.which, fetch.subprocess.run
+    fetch.shutil.which = lambda n: "/usr/bin/pdftotext"
+    try:
+        for rc, out in ((1, "text"), (0, "  \n")):
+            fetch.subprocess.run = lambda *a, rc=rc, out=out, **k: \
+                type("R", (), {"returncode": rc, "stdout": out})()
+            assert fetch.limitations(p)["route"] == "limitations-unavailable"
+        fetch.subprocess.run = lambda *a, **k: type(
+            "R", (), {"returncode": 0, "stdout": "Ok. We leave it open.\n"})()
+        r = fetch.limitations(p)
+        assert r["route"] == "limitations" and r["hits"][0]["sentence"] == "We leave it open."
+    finally:
+        fetch.shutil.which, fetch.subprocess.run = ow, orun
 
 
 CHECKS = [

@@ -795,6 +795,8 @@ def _limitation_hits(text: str, file: str, latex: bool) -> list[dict]:
     for no, raw in enumerate(text.splitlines(), 1):
         if latex and raw.lstrip().startswith("%"):
             continue
+        if latex:
+            raw = re.split(r"(?<!\\)%", raw, 1)[0]
         m = _SECTION_RE.match(raw) if latex else None
         if m:
             flush()
@@ -823,11 +825,16 @@ def limitations(workdir: Path) -> dict:
     pdfs = sorted(workdir.glob("*.pdf"))
     if pdfs and shutil.which("pdftotext"):
         try:
-            out = subprocess.run(["pdftotext", "-layout", str(pdfs[0]), "-"],
-                                 capture_output=True, text=True, timeout=60).stdout
+            run = subprocess.run(["pdftotext", "-layout", str(pdfs[0]), "-"],
+                                 capture_output=True, text=True, timeout=60)
         except Exception as e:
             log(f"  pdftotext: {e}")
             return {"route": "limitations-unavailable", "reason": f"pdftotext failed: {e}"}
+        if run.returncode or not run.stdout.strip():
+            return {"route": "limitations-unavailable",
+                    "reason": f"pdftotext gave no text from {pdfs[0].name} "
+                              "(corrupt, encrypted or scanned PDF)"}
+        out = run.stdout
         return {"route": "limitations", "source": str(pdfs[0]),
                 "hits": _limitation_hits(out, pdfs[0].name, False)}
     return {"route": "limitations-unavailable",
