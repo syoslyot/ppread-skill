@@ -31,12 +31,12 @@ def write_doc(path: Path, fields: dict) -> None:
 def check_lecture_docs_and_conflicts() -> None:
     d = Path(tempfile.mkdtemp())
     assert fetch.lecture_docs(d) == {"kind": "paper", "legacy": False,
-                                     "broad": "absent", "deep": "absent"}
+                                     "primer": "absent", "broad": "absent", "deep": "absent"}
 
     write_doc(d / "broad.md", {**A, "mode": "broad", "lecture_read": "true"})
     write_doc(d / "deep.part.md", {**A, "mode": "deep", "lecture_read": "false"})
     assert fetch.lecture_docs(d) == {"kind": "paper", "legacy": False,
-                                     "broad": "read", "deep": "partial"}
+                                     "primer": "absent", "broad": "read", "deep": "partial"}
     assert fetch.folder_conflict(d, A_META, "s") is None
     c = fetch.folder_conflict(d, B_META, "s")
     assert c["route"] == "conflict" and c["occupant"]["file"] == "broad.md", c
@@ -50,14 +50,14 @@ def check_lecture_docs_and_conflicts() -> None:
     write_doc(e / "deep.md", {"title": "Paper B", "arxiv": "2222.22222",
                               "mode": "deep", "lecture_read": "false"})
     assert fetch.lecture_docs(e) == {"kind": "paper", "legacy": False,
-                                     "broad": "unread", "deep": "unread"}
+                                     "primer": "absent", "broad": "unread", "deep": "unread"}
     c = fetch.folder_conflict(e, A_META, "s")
     assert c and c["occupant"]["file"] == "deep.md", c
 
     f = Path(tempfile.mkdtemp())
     write_doc(f / "lecture.md", A)
     assert fetch.lecture_docs(f) == {"kind": "paper", "legacy": True,
-                                     "broad": "absent", "deep": "absent"}
+                                     "primer": "absent", "broad": "absent", "deep": "absent"}
     assert fetch.folder_conflict(f, A_META, "s") is None
     assert fetch.folder_conflict(f, B_META, "s")["occupant"]["file"] == "lecture.md"
 
@@ -201,13 +201,13 @@ def check_list_library() -> None:
     assert r["route"] == "list" and r["library"] == str(lib)
     assert r["papers"] == [
         {"slug": "a-read", "kind": "paper", "title": "Paper A", "year": "2017", "tier": "1",
-         "broad": "read", "deep": "unread", "legacy": False},
+         "primer": "absent", "broad": "read", "deep": "unread", "legacy": False},
         {"slug": "b-legacy", "kind": "paper", "title": "Legacy", "year": "2016", "tier": "6",
-         "broad": "absent", "deep": "absent", "legacy": True},
+         "primer": "absent", "broad": "absent", "deep": "absent", "legacy": True},
         {"slug": "c-source-only", "kind": "paper", "title": "", "year": "", "tier": "",
-         "broad": "absent", "deep": "absent", "legacy": False},
+         "primer": "absent", "broad": "absent", "deep": "absent", "legacy": False},
         {"slug": "d-partial", "kind": "paper", "title": "Partial", "year": "", "tier": "",
-         "broad": "partial", "deep": "absent", "legacy": False},
+         "primer": "absent", "broad": "partial", "deep": "absent", "legacy": False},
         {"slug": "vlsi-dsp/ch01-introduction", "kind": "slides", "title": "Ch01 Introduction",
          "year": "2026", "tier": "6", "broad": "unread", "deep": "absent",
          "research": "absent", "legacy": False},
@@ -724,7 +724,173 @@ def check_user_notes_are_not_lectures() -> None:
     assert r["route"] == "conflict" and "without --course" in r["resolve"], r
 
 
+def check_primer_state() -> None:
+    d = Path(tempfile.mkdtemp())
+    assert fetch.lecture_docs(d) == {"kind": "paper", "legacy": False,
+        "primer": "absent", "broad": "absent", "deep": "absent"}
+    # Folder finished before this change: old broad + deep, no primer.
+    write_doc(d / "broad.md", {**A, "mode": "broad", "lecture_read": "true"})
+    write_doc(d / "deep.md", {**A, "mode": "deep", "lecture_read": "false"})
+    docs = fetch.lecture_docs(d)
+    assert (docs["primer"], docs["broad"], docs["deep"]) == ("absent", "read", "unread")
+    # A hidden work directory alone means in progress.
+    (d / ".primer.parts").mkdir()
+    assert fetch.lecture_docs(d)["primer"] == "partial"
+    assert "primer.md" in fetch.DOC_FILES and "primer.part.md" in fetch.DOC_FILES
+    s = Path(tempfile.mkdtemp())
+    write_doc(s / "broad.md", {**A, "kind": "slides", "mode": "broad"})
+    assert "primer" not in fetch.lecture_docs(s)
+
+
+def check_assemble() -> None:
+    d = Path(tempfile.mkdtemp()); p = d / ".broad.parts"; p.mkdir()
+    (p / "00-header.md").write_text("HEAD\n", "utf-8")
+    for n in ("01", "02"):
+        (p / f"brief-{n}.md").write_text("b", "utf-8")
+    (p / "02-results.md").write_text("TWO\n", "utf-8")
+    (p / "01-intro.tmp.md").write_text("half", "utf-8")
+    r = fetch.assemble(d, "broad")
+    assert r["route"] == "assemble-incomplete" and r["missing"] == ["brief-01.md"], r
+    assert not (d / "broad.part.md").exists()
+    (p / "01-intro.tmp.md").rename(p / "01-intro.md")
+    (p / "01-intro.md").write_text("ONE\n", "utf-8")
+    r = fetch.assemble(d, "broad")
+    assert r["route"] == "assembled", r
+    first = (d / "broad.part.md").read_text("utf-8")
+    assert first.index("HEAD") < first.index("ONE") < first.index("TWO")
+    assert "half" not in first and "\nb" not in first   # briefs and tmp never assembled
+    (d / "broad.part.md").write_text(first + "STEP7\n", "utf-8")
+    fetch.assemble(d, "broad")                           # rerun after interruption
+    assert (d / "broad.part.md").read_text("utf-8") == first
+    assert p.is_dir()                                    # assemble never deletes
+    assert fetch.assemble(Path(tempfile.mkdtemp()), "broad")["route"] == "assemble-unavailable"
+
+
+def check_assemble_guards() -> None:
+    """No brief means no plan; parts without a brief are stray; one NN, one part."""
+    d = Path(tempfile.mkdtemp()); p = d / ".deep.parts"; p.mkdir()
+    (p / "00-header.md").write_text("HEAD\n", "utf-8")
+    (p / "01-intro.md").write_text("ONE\n", "utf-8")
+    r = fetch.assemble(d, "deep")
+    assert r["route"] in ("assemble-incomplete", "assemble-unavailable"), r
+    assert not (d / "deep.part.md").exists()
+    (p / "brief-01.md").write_text("b", "utf-8")
+    (p / "07-stray.md").write_text("STRAY\n", "utf-8")
+    r = fetch.assemble(d, "deep")
+    assert r["route"] == "assembled" and r["parts"] == 1, r
+    assert "STRAY" not in (d / "deep.part.md").read_text("utf-8")
+    (p / "01-intro-v2.md").write_text("AGAIN\n", "utf-8")
+    r = fetch.assemble(d, "deep")
+    assert r["route"] == "assemble-incomplete", r
+    assert r["duplicates"] == ["01-intro-v2.md", "01-intro.md"], r
+
+
+def check_finish_leftover() -> None:
+    d = Path(tempfile.mkdtemp())
+    (d / ".deep.parts").mkdir(); (d / "deep.part.md").write_text("x", "utf-8")
+    orig = fetch.shutil.rmtree
+
+    def boom(*a, **k):
+        if k.get("ignore_errors"):
+            return
+        raise OSError("busy")
+    fetch.shutil.rmtree = boom
+    try:
+        r = fetch.finish(d, "deep")
+    finally:
+        fetch.shutil.rmtree = orig
+    assert r["route"] == "finished" and (d / "deep.md").is_file(), r
+    assert r["leftover"] == str(d / ".deep.parts") and "busy" in r["reason"], r
+
+
+def check_finish() -> None:
+    d = Path(tempfile.mkdtemp())
+    (d / ".deep.parts").mkdir(); (d / "deep.part.md").write_text("x", "utf-8")
+    assert fetch.finish(d, "deep")["route"] == "finished"
+    assert (d / "deep.md").read_text("utf-8") == "x"
+    assert not (d / "deep.part.md").exists() and not (d / ".deep.parts").exists()
+    e = Path(tempfile.mkdtemp()); (e / "primer.part.md").write_text("y", "utf-8")
+    assert fetch.finish(e, "primer")["route"] == "finished"   # no parts dir: rename only
+    assert fetch.finish(e, "primer")["route"] == "finish-unavailable"
+
+
+def check_parts_dir_hidden() -> None:
+    lib = Path(tempfile.mkdtemp()); d = lib / "paper-a"
+    write_doc(d / "broad.md", {**A, "mode": "broad"})
+    (d / "paper.pdf").write_bytes(b"%PDF-1.4\n")
+    p = d / ".deep.parts"; p.mkdir()
+    (p / "source.md").write_text("text", "utf-8"); (p / "x.pdf").write_bytes(b"%PDF")
+    rows = fetch.list_library(lib)
+    slugs = [r["slug"] for r in rows["papers"]]
+    assert slugs == ["paper-a"], rows
+    assert rows["papers"][0]["deep"] == "partial", rows
+    r = _adopt(d / "paper.pdf", {"Page size": "612 x 792 pts", "Title": "Paper A"})
+    assert r["route"] != "conflict", r
+
+
+def check_limitations() -> None:
+    d = Path(tempfile.mkdtemp()); (d / "src").mkdir()
+    (d / "src" / "main.tex").write_text(
+        "\\section{Method}\nWe propose X.\n"
+        "% We leave this for future work.\n"
+        "\\section{Discussion}\nOur evaluation is small. Scaling remains\n"
+        "unclear for larger graphs. Results are good.\n", "utf-8")
+    r = fetch.limitations(d)
+    assert r["route"] == "limitations"
+    assert [h["sentence"] for h in r["hits"]] == [
+        "Scaling remains unclear for larger graphs."]
+    assert r["hits"][0]["section"] == "Discussion" and r["hits"][0]["file"] == "main.tex"
+    assert r["hits"][0]["line"] == 5
+    e = Path(tempfile.mkdtemp()); (e / ".broad.parts").mkdir()
+    (e / ".broad.parts" / "source.md").write_text("A. Little is known about B. C.", "utf-8")
+    assert [h["sentence"] for h in fetch.limitations(e)["hits"]] == ["Little is known about B."]
+    assert fetch.limitations(Path(tempfile.mkdtemp()))["route"] == "limitations-unavailable"
+    c = Path(tempfile.mkdtemp()); (c / "src").mkdir()
+    (c / "src" / "a.tex").write_text(
+        "Fine. % future work here\nGain is 5\\%, not yet proven.\n", "utf-8")
+    assert [h["sentence"] for h in fetch.limitations(c)["hits"]] == [
+        "Gain is 5\\%, not yet proven."]
+    f = Path(tempfile.mkdtemp())
+    (f / "src").mkdir()
+    (f / "src" / "a.tex").write_text("The question remains open here.\n", "utf-8")
+    assert [h["sentence"] for h in fetch.limitations(f)["hits"]] == [
+        "The question remains open here."]
+    (f / "source.tex").write_text(
+        "\\section{Intro}\nWe begin.\n"
+        "\n% [ppread] >>> sec/disc.tex\n"
+        "\\section{Discussion}\nThis is an open question.\n"
+        "\n% [ppread] <<< sec/disc.tex\n"
+        "Speed is fine. Extending it is not yet done.\n", "utf-8")
+    r = fetch.limitations(f)
+    assert r["source"] == str(f / "source.tex"), r
+    assert [(h["sentence"], h["section"], h["file"], h["origin"], h["line"])
+            for h in r["hits"]] == [
+        ("This is an open question.", "Discussion", "source.tex", "sec/disc.tex", 6),
+        ("Extending it is not yet done.", "Discussion", "source.tex", "", 9)], r
+    p = Path(tempfile.mkdtemp()); (p / "x.pdf").write_bytes(b"%PDF")
+    ow, orun = fetch.shutil.which, fetch.subprocess.run
+    fetch.shutil.which = lambda n: "/usr/bin/pdftotext"
+    try:
+        for rc, out in ((1, "text"), (0, "  \n")):
+            fetch.subprocess.run = lambda *a, rc=rc, out=out, **k: \
+                type("R", (), {"returncode": rc, "stdout": out})()
+            assert fetch.limitations(p)["route"] == "limitations-unavailable"
+        fetch.subprocess.run = lambda *a, **k: type(
+            "R", (), {"returncode": 0, "stdout": "Ok. We leave it open.\n"})()
+        r = fetch.limitations(p)
+        assert r["route"] == "limitations" and r["hits"][0]["sentence"] == "We leave it open."
+    finally:
+        fetch.shutil.which, fetch.subprocess.run = ow, orun
+
+
 CHECKS = [
+    check_assemble,
+    check_limitations,
+    check_finish,
+    check_assemble_guards,
+    check_finish_leftover,
+    check_parts_dir_hidden,
+    check_primer_state,
     check_lecture_docs_and_conflicts,
     check_slides_lecture_state,
     check_same_paper_course,
