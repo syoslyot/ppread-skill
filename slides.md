@@ -79,7 +79,8 @@ low resolution, overlapped by a note, ambiguous handwriting — gets
 
 ## Step 1: Survey before writing
 
-Read the whole deck first. Then tell the user, in a short block:
+Read the whole deck first. Then print a short status block and carry on without
+waiting — it informs; it does not ask:
 
 - The mode that will be written, and why (flag given, or first unfinished in the sequence)
 - The question the chapter answers, in one or two sentences
@@ -97,8 +98,6 @@ Add the plan for the mode:
   planned; the estimated number of Semantic Scholar requests and time (keyless:
   roughly 20–25 requests and up to tens of minutes, because of 429 backoff —
   mention that `PPREAD_S2_API_KEY` removes most of it)
-
-Wait for the user to confirm or adjust.
 
 ## Step 2: Research queries (research only)
 

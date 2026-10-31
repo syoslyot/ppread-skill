@@ -574,7 +574,7 @@ def expand(path: Path, root: Path, seen: set[Path], depth: int = 0) -> str:
     return INPUT_RE.sub(sub, text)
 
 
-def assemble(root: Path, strip_comments: bool) -> str | None:
+def assemble_latex(root: Path, strip_comments: bool) -> str | None:
     main = find_main_tex(root)
     if main is None:
         return None
@@ -651,9 +651,9 @@ def pdf_kind(path: Path, info: dict | None = None) -> str:
 # paper than the source lying next to it, and nothing in either file says so.
 
 
-DOC_FILES = ("broad.md", "deep.md", "research.md", "broad.part.md", "deep.part.md",
-             "research.part.md", "lecture.md")
-MODES = {"paper": ("broad", "deep"), "slides": ("broad", "deep", "research")}
+DOC_FILES = ("primer.md", "broad.md", "deep.md", "research.md", "primer.part.md",
+             "broad.part.md", "deep.part.md", "research.part.md", "lecture.md")
+MODES = {"paper": ("primer", "broad", "deep"), "slides": ("broad", "deep", "research")}
 
 
 def front_matter(f: Path) -> dict | None:
@@ -714,13 +714,14 @@ def lecture_docs(workdir: Path, kind: str = "") -> dict:
     """Which lectures a folder holds and how far each has got. A lecture is written
     as <mode>.part.md and renamed only once its last section is done, so a .part
     file means unfinished even when a finished file of that mode also exists — a
-    regeneration in progress is not done. Which modes exist depends on the kind:
+    regeneration in progress is not done. The hidden <mode>.parts directory, where
+    sections are written before assembly, counts the same. Which modes exist depends on the kind:
     a caller that already decided it passes it, otherwise the folder says."""
     if kind not in MODES:
         kind = doc_kind(workdir) or source_kind(workdir)
     docs = {"kind": kind, "legacy": (workdir / "lecture.md").is_file()}
     for mode in MODES[kind]:
-        if (workdir / f"{mode}.part.md").is_file():
+        if (workdir / f"{mode}.part.md").is_file() or (workdir / f".{mode}.parts").is_dir():
             docs[mode] = "partial"
             continue
         fields = front_matter(workdir / f"{mode}.md")
@@ -729,6 +730,149 @@ def lecture_docs(workdir: Path, kind: str = "") -> dict:
         else:
             docs[mode] = "read" if fields.get("lecture_read", "").lower() == "true" else "unread"
     return docs
+
+
+def assemble(workdir: Path, mode: str) -> dict:
+    """Join header and finished sections of <workdir>/.<mode>.parts into
+    <mode>.part.md. Rebuilt from scratch on every call, so an interrupted run
+    or later hand edits to the .part file never accumulate."""
+    parts = workdir / f".{mode}.parts"
+    header = parts / "00-header.md"
+    if not header.is_file():
+        return {"route": "assemble-unavailable",
+                "reason": f"no {header.relative_to(workdir)}"}
+    names = sorted(n for n in os.listdir(parts) if n.endswith(".md"))
+    briefs = {n[6:8] for n in names if re.fullmatch(r"brief-\d\d\.md", n)}
+    if not briefs:
+        return {"route": "assemble-incomplete", "reason": "no brief-NN.md: no parts plan"}
+    done = [n for n in names if re.fullmatch(r"\d\d-.+\.md", n) and n[:2] in briefs
+            and not n.endswith(".tmp.md")]
+    nn = [n[:2] for n in done]
+    dups = [n for n in done if nn.count(n[:2]) > 1]
+    if dups:
+        return {"route": "assemble-incomplete", "duplicates": dups}
+    missing = [f"brief-{b}.md" for b in sorted(briefs) if b not in nn]
+    if missing:
+        return {"route": "assemble-incomplete", "missing": missing}
+    body = [(parts / n).read_text("utf-8").strip("\n") for n in ["00-header.md"] + done]
+    tmp = workdir / f".{mode}.assemble.tmp"
+    tmp.write_text("\n\n".join(body) + "\n", "utf-8")
+    out = workdir / f"{mode}.part.md"
+    os.replace(tmp, out)
+    return {"route": "assembled", "path": str(out), "parts": len(done)}
+
+
+def finish(workdir: Path, mode: str) -> dict:
+    part = workdir / f"{mode}.part.md"
+    if not part.is_file():
+        return {"route": "finish-unavailable", "reason": f"no {part.name}"}
+    out = workdir / f"{mode}.md"
+    os.replace(part, out)
+    parts = workdir / f".{mode}.parts"
+    try:
+        if parts.exists():
+            shutil.rmtree(parts)
+    except OSError as e:
+        return {"route": "finished", "path": str(out), "leftover": str(parts),
+                "reason": f"could not remove {parts.name}: {e}"}
+    return {"route": "finished", "path": str(out)}
+
+
+LIMITATION_PHRASES = (
+    "future work", "future research", "remains unclear", "remains poorly understood",
+    "has not been examined", "limited evidence", "little is known", "is left for",
+    "we leave", "beyond the scope", "limitation", "to our knowledge",
+    "does not address", "not yet", "in the future", "open question", "remains open")
+_SECTION_RE = re.compile(r"^\s*\\(?:sub)*section\*?\{(.*)\}")
+
+
+_MARKER_RE = re.compile(r"^% \[ppread\] (>>>|<<<) (.+?)\s*$")
+
+
+def _limitation_hits(text: str, file: str, latex: bool,
+                     origin: str | None = None) -> list[dict]:
+    """origin is None except for source.tex, whose provenance markers name the
+    source file each line came from; origin is then the top-level file."""
+    hits, section, para, stack = [], "", [], []
+
+    def flush() -> None:
+        if not para:
+            return
+        joined, starts = "", []
+        for no, s, src in para:
+            starts.append((len(joined), no, src))
+            joined += s + " "
+        for m in re.finditer(r"\S.*?(?:[.!?](?=\s|$)|$)", joined, re.S):
+            s = " ".join(m.group().split())
+            low = s.lower()
+            if s and any(p in low for p in LIMITATION_PHRASES):
+                _, line, src = [t for t in starts if t[0] <= m.start()][-1]
+                hit = {"sentence": s, "section": section, "file": file, "line": line}
+                if origin is not None:
+                    hit["origin"] = src
+                hits.append(hit)
+        para.clear()
+
+    for no, raw in enumerate(text.splitlines(), 1):
+        if origin is not None and (mk := _MARKER_RE.match(raw)):
+            if mk.group(1) == ">>>":
+                stack.append(mk.group(2))
+            elif stack:
+                stack.pop()
+            continue
+        if latex and raw.lstrip().startswith("%"):
+            continue
+        if latex:
+            raw = re.split(r"(?<!\\)%", raw, 1)[0]
+        m = _SECTION_RE.match(raw) if latex else None
+        if m:
+            flush()
+            section = " ".join(m.group(1).split())
+        elif raw.strip():
+            para.append((no, raw.strip(), stack[-1] if stack else origin))
+        else:
+            flush()
+    flush()
+    return hits
+
+
+def limitations(workdir: Path) -> dict:
+    """Sentences carrying a limitation phrase, verbatim, from the best source on
+    disk: the expanded source.tex, src/*.tex, the work dir's source.md, the PDF."""
+    st = workdir / "source.tex"
+    if st.is_file():
+        main = find_main_tex(workdir / "src") if (workdir / "src").is_dir() else None
+        top = main.relative_to(workdir / "src").as_posix() if main else ""
+        return {"route": "limitations", "source": str(st),
+                "hits": _limitation_hits(st.read_text("utf-8", errors="replace"),
+                                         "source.tex", True, top)}
+    tex = sorted((workdir / "src").rglob("*.tex")) if (workdir / "src").is_dir() else []
+    if tex:
+        hits = []
+        for f in tex:
+            hits += _limitation_hits(f.read_text("utf-8", errors="replace"),
+                                     f.relative_to(workdir / "src").as_posix(), True)
+        return {"route": "limitations", "source": str(workdir / "src"), "hits": hits}
+    for md in sorted(workdir.glob(".*.parts/source.md")):
+        return {"route": "limitations", "source": str(md),
+                "hits": _limitation_hits(md.read_text("utf-8", errors="replace"), md.name, False)}
+    pdfs = sorted(workdir.glob("*.pdf"))
+    if pdfs and shutil.which("pdftotext"):
+        try:
+            run = subprocess.run(["pdftotext", "-layout", str(pdfs[0]), "-"],
+                                 capture_output=True, text=True, timeout=60)
+        except Exception as e:
+            log(f"  pdftotext: {e}")
+            return {"route": "limitations-unavailable", "reason": f"pdftotext failed: {e}"}
+        if run.returncode or not run.stdout.strip():
+            return {"route": "limitations-unavailable",
+                    "reason": f"pdftotext gave no text from {pdfs[0].name} "
+                              "(corrupt, encrypted or scanned PDF)"}
+        out = run.stdout
+        return {"route": "limitations", "source": str(pdfs[0]),
+                "hits": _limitation_hits(out, pdfs[0].name, False)}
+    return {"route": "limitations-unavailable",
+            "reason": "no src/*.tex, no source.md, and no PDF readable with pdftotext"}
 
 
 def _norm_arxiv(v: str) -> str:
@@ -1156,6 +1300,13 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=SEARCH_LIMIT, metavar="N",
                     help=f"with --search: at most N papers (default {SEARCH_LIMIT}, "
                          f"max {SEARCH_MAX})")
+    ap.add_argument("--assemble", nargs=2, metavar=("WORKDIR", "MODE"),
+                    help="join the finished sections in WORKDIR/.MODE.parts into "
+                         "MODE.part.md")
+    ap.add_argument("--finish", nargs=2, metavar=("WORKDIR", "MODE"),
+                    help="rename MODE.part.md to MODE.md and delete .MODE.parts")
+    ap.add_argument("--limitations", metavar="WORKDIR",
+                    help="author-stated limitation sentences in WORKDIR's source, verbatim")
     ap.add_argument("--list", nargs="?", const="", metavar="DIR",
                     help="list paper folders and the state of their lectures; "
                          "defaults to the configured library")
@@ -1181,6 +1332,20 @@ def main() -> int:
         print(json.dumps(search(args.search, args.since, args.limit),
                          ensure_ascii=False, indent=2))
         return 0
+
+    if args.limitations:
+        print(json.dumps(limitations(Path(args.limitations).expanduser()),
+                         ensure_ascii=False, indent=2))
+        return 0
+
+    for flag, fn in (("assemble", assemble), ("finish", finish)):
+        if getattr(args, flag):
+            wd, mode = getattr(args, flag)
+            if mode not in MODES["paper"]:
+                log(f"--{flag} MODE must be one of {', '.join(MODES['paper'])}")
+                return 2
+            print(json.dumps(fn(Path(wd).expanduser(), mode), ensure_ascii=False, indent=2))
+            return 0
 
     if args.list is not None:
         root = Path(args.list).expanduser() if args.list else resolve_out(None)[0]
@@ -1314,7 +1479,7 @@ def main() -> int:
         workdir.mkdir(parents=True, exist_ok=True)
         kind2, path = fetch_eprint(meta["arxiv_id"], workdir)
         if kind2 == "latex" and path is not None:
-            text = assemble(path, strip_comments=not args.keep_comments)
+            text = assemble_latex(path, strip_comments=not args.keep_comments)
             if text:
                 out = workdir / "source.tex"
                 out.write_text(text, "utf-8")
