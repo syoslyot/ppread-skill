@@ -262,7 +262,10 @@ block and **carry on without waiting** — it informs; it does not ask:
   source length, each with its section range
 - The term-owner list: every background term the paper needs, each with one
   owner — the prerequisites when it is needed before or across parts, else the
-  single part where it first appears
+  single part where it first appears. When a lower lecture owns the prerequisites,
+  a term it does not cover goes to the first part where it appears; never link to
+  a section that lacks it. The paper's own concepts (what it defines or proposes,
+  e.g. residual learning) are not prerequisite terms: the defining part owns them
 - Who owns〈讀懂它需要先知道的〉(see "Prerequisites live once" in Step 3)
 - Deep: the whole paper, unless the invocation itself named certain sections
 
@@ -334,7 +337,8 @@ python3 ~/.claude/skills/ppread/fetch.py --limitations "<workdir>"
 ```
 
 Offline. `limitations` carries `source` and `hits` (`sentence`, `section`,
-`file`, `line`); a hit may begin mid-sentence, and `source: pdf` hits are lower
+`file`, `line`; from `source.tex` also `origin`, the e-print file the line came
+from); a hit may begin mid-sentence, and `source: pdf` hits are lower
 fidelity — say so. `limitations-unavailable` → the section says the text could
 not be scanned. Never add a limitation the scan did not return.
 
@@ -368,9 +372,10 @@ hidden from `--list` and the folder checks; part numbers are two digits, 01–99
 2. **Briefs.** For each part of the Step 1 plan write `brief-NN.tmp.md`: the section
    range; the source path (`source_path`, or `.<mode>.parts/source.md`); which
    `lecture-format.md` parts to read; the terms it owns (explain fully); the terms
-   owned elsewhere, with where (link, never re-explain); the verified outside
-   papers it may cite, copied from `context.json` (nothing else); the figure paths
-   for its sections; its output name `NN-<slug>.md`. Only when every brief is
+   owned elsewhere, with where (link, never re-explain); its unit budget under
+   `lecture-format.md`'s 通讀 caps; the verified outside papers it may cite,
+   copied from `context.json` (nothing else); the figure paths for its sections;
+   its output name `NN-<slug>.md`. Only when every brief is
    written, rename them all to `brief-NN.md` — that set of renames marks the plan
    complete, and `--assemble` counts only `brief-NN.md`.
 3. **Writers.** Dispatch one writer per brief with the Agent tool, all in a single
@@ -386,7 +391,7 @@ hidden from `--list` and the folder checks; part numbers are two digits, 01–99
    re-computes every numbered trace and checks every load-bearing number and its
    provenance against the source, may only correct arithmetic and provenance in
    place, never touches the network or runs `fetch.py`, and reports what it
-   changed — relay that in one line.
+   changed and any section over its unit cap — relay that in one line.
 5. **Assemble.**
    ```bash
    python3 ~/.claude/skills/ppread/fetch.py --assemble "<workdir>" <mode>
@@ -394,18 +399,21 @@ hidden from `--list` and the folder checks; part numbers are two digits, 01–99
    `assembled` → `<mode>.part.md` holds the header and every part in order.
    `assemble-incomplete` → re-dispatch the writers of the briefs in `missing`,
    then redo steps 4–5; a part missing a second time you write yourself (the
-   fallback below). `assemble-unavailable` → report `reason` and stop.
+   fallback below). `duplicates` → keep one finished file per number and delete
+   the rest; `reason` (no briefs) → redo step 2. `assemble-unavailable` → report
+   `reason` and stop.
 6. **Whole-paper sections.** Append to `<mode>.part.md`, one `##` per pass, the
    sections that need the whole paper, reading `context.json`: 通讀 —
    〈作者自述的限制〉,〈它在研究脈絡中的位置〉,〈延伸閱讀〉; 精讀 —〈論證鏈〉,
    〈主張與證據〉,〈設計決策〉. Then Step 4.
 
 **Resume** (`.<mode>.parts/` exists): Steps 1–2 still run, Step 2 making only the
-calls `context.json` lacks; then continue here from the first step whose output
-is missing. No `00-header.md` → step 1. Any `brief-*.tmp.md`, or no `brief-NN.md`
-→ delete the tmp briefs and redo step 2; otherwise the existing briefs are the
-plan of record. Then delete any leftover part `.tmp.md`, re-dispatch only the
-briefs with no finished part, and redo steps 4–6. Re-assembling overwrites
+calls `context.json` lacks; then continue here from the first orchestration step
+whose output is missing. No `00-header.md` → orchestration step 1. Any
+`brief-*.tmp.md`, or no `brief-NN.md` → delete the tmp briefs and redo
+orchestration step 2; otherwise the existing briefs are the plan of record. Then
+delete any leftover part `.tmp.md`, re-dispatch only the briefs with no finished
+part, and redo orchestration steps 4–6. Re-assembling overwrites
 `<mode>.part.md`, discarding the interrupted run's whole-paper sections; step 6
 rewrites them from `context.json`. No network call is repeated.
 
@@ -415,8 +423,8 @@ the same files, and do the checker's pass yourself; nothing else changes.
 ## Step 4: Questions, then finish the file
 
 Read `questions.md` (same directory). Append the「問題」section to
-`<mode>.part.md`: the five fixed questions for the mode (`### 導讀` P1–P5,
-`### 通讀` B1–B5, `### 精讀` D1–D5), verbatim and in order, then at most three
+`<mode>.part.md`: the five fixed questions for the mode (questions.md's 導讀 set
+P1–P5, 通讀 set B1–B5, 精讀 set D1–D5), verbatim and in order, then at most three
 custom questions from `Q6`, each with a folded reference answer.
 
 When the questions are written, the lecture is complete. Finish it:
@@ -426,7 +434,8 @@ python3 ~/.claude/skills/ppread/fetch.py --finish "<workdir>" <mode>
 ```
 
 `finished` → `path` is the lecture; `<mode>.part.md` was renamed to `<mode>.md`
-and `.<mode>.parts/` removed. `finish-unavailable` → report `reason`. Only this
+and `.<mode>.parts/` removed. A `leftover` field means that directory could not
+be removed: delete it yourself, or the lecture reads as partial. `finish-unavailable` → report `reason`. Only this
 rename marks the lecture as finished — `--list` and the next run rely on it.
 
 ## Step 5: Stop
@@ -484,6 +493,9 @@ critique that cites a conflicting result, or a reference answer — comes from
 A list recalled from memory gets an author, a year or a title wrong, or names a
 paper that does not exist, and reads exactly as convincingly as a correct one; a
 reader will go looking for it.
+
+**Author comments are not the paper.** On the LaTeX route, text after an
+unescaped `%` is an author comment: never quote, translate or take a number from it.
 
 **Translate and explain as separate acts.** The translation renders what the
 authors wrote, including where they were vague. The explanation is where context,
