@@ -766,6 +766,43 @@ def check_assemble() -> None:
     assert fetch.assemble(Path(tempfile.mkdtemp()), "broad")["route"] == "assemble-unavailable"
 
 
+def check_assemble_guards() -> None:
+    """No brief means no plan; parts without a brief are stray; one NN, one part."""
+    d = Path(tempfile.mkdtemp()); p = d / ".deep.parts"; p.mkdir()
+    (p / "00-header.md").write_text("HEAD\n", "utf-8")
+    (p / "01-intro.md").write_text("ONE\n", "utf-8")
+    r = fetch.assemble(d, "deep")
+    assert r["route"] in ("assemble-incomplete", "assemble-unavailable"), r
+    assert not (d / "deep.part.md").exists()
+    (p / "brief-01.md").write_text("b", "utf-8")
+    (p / "07-stray.md").write_text("STRAY\n", "utf-8")
+    r = fetch.assemble(d, "deep")
+    assert r["route"] == "assembled" and r["parts"] == 1, r
+    assert "STRAY" not in (d / "deep.part.md").read_text("utf-8")
+    (p / "01-intro-v2.md").write_text("AGAIN\n", "utf-8")
+    r = fetch.assemble(d, "deep")
+    assert r["route"] == "assemble-incomplete", r
+    assert r["duplicates"] == ["01-intro-v2.md", "01-intro.md"], r
+
+
+def check_finish_leftover() -> None:
+    d = Path(tempfile.mkdtemp())
+    (d / ".deep.parts").mkdir(); (d / "deep.part.md").write_text("x", "utf-8")
+    orig = fetch.shutil.rmtree
+
+    def boom(*a, **k):
+        if k.get("ignore_errors"):
+            return
+        raise OSError("busy")
+    fetch.shutil.rmtree = boom
+    try:
+        r = fetch.finish(d, "deep")
+    finally:
+        fetch.shutil.rmtree = orig
+    assert r["route"] == "finished" and (d / "deep.md").is_file(), r
+    assert r["leftover"] == str(d / ".deep.parts") and "busy" in r["reason"], r
+
+
 def check_finish() -> None:
     d = Path(tempfile.mkdtemp())
     (d / ".deep.parts").mkdir(); (d / "deep.part.md").write_text("x", "utf-8")
@@ -813,6 +850,23 @@ def check_limitations() -> None:
         "Fine. % future work here\nGain is 5\\%, not yet proven.\n", "utf-8")
     assert [h["sentence"] for h in fetch.limitations(c)["hits"]] == [
         "Gain is 5\\%, not yet proven."]
+    f = Path(tempfile.mkdtemp())
+    (f / "src").mkdir()
+    (f / "src" / "a.tex").write_text("The question remains open here.\n", "utf-8")
+    assert [h["sentence"] for h in fetch.limitations(f)["hits"]] == [
+        "The question remains open here."]
+    (f / "source.tex").write_text(
+        "\\section{Intro}\nWe begin.\n"
+        "\n% [ppread] >>> sec/disc.tex\n"
+        "\\section{Discussion}\nThis is an open question.\n"
+        "\n% [ppread] <<< sec/disc.tex\n"
+        "Speed is fine. Extending it is not yet done.\n", "utf-8")
+    r = fetch.limitations(f)
+    assert r["source"] == str(f / "source.tex"), r
+    assert [(h["sentence"], h["section"], h["file"], h["origin"], h["line"])
+            for h in r["hits"]] == [
+        ("This is an open question.", "Discussion", "source.tex", "sec/disc.tex", 6),
+        ("Extending it is not yet done.", "Discussion", "source.tex", "", 9)], r
     p = Path(tempfile.mkdtemp()); (p / "x.pdf").write_bytes(b"%PDF")
     ow, orun = fetch.shutil.which, fetch.subprocess.run
     fetch.shutil.which = lambda n: "/usr/bin/pdftotext"
@@ -833,6 +887,8 @@ CHECKS = [
     check_assemble,
     check_limitations,
     check_finish,
+    check_assemble_guards,
+    check_finish_leftover,
     check_parts_dir_hidden,
     check_primer_state,
     check_lecture_docs_and_conflicts,

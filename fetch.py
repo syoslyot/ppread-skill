@@ -742,10 +742,16 @@ def assemble(workdir: Path, mode: str) -> dict:
         return {"route": "assemble-unavailable",
                 "reason": f"no {header.relative_to(workdir)}"}
     names = sorted(n for n in os.listdir(parts) if n.endswith(".md"))
-    done = [n for n in names if re.fullmatch(r"\d\d-.+\.md", n)
-            and not n.endswith(".tmp.md") and n != "00-header.md"]
-    missing = [n for n in names if re.fullmatch(r"brief-\d\d\.md", n)
-               and not any(d.startswith(n[6:8] + "-") for d in done)]
+    briefs = {n[6:8] for n in names if re.fullmatch(r"brief-\d\d\.md", n)}
+    if not briefs:
+        return {"route": "assemble-incomplete", "reason": "no brief-NN.md: no parts plan"}
+    done = [n for n in names if re.fullmatch(r"\d\d-.+\.md", n) and n[:2] in briefs
+            and not n.endswith(".tmp.md")]
+    nn = [n[:2] for n in done]
+    dups = [n for n in done if nn.count(n[:2]) > 1]
+    if dups:
+        return {"route": "assemble-incomplete", "duplicates": dups}
+    missing = [f"brief-{b}.md" for b in sorted(briefs) if b not in nn]
     if missing:
         return {"route": "assemble-incomplete", "missing": missing}
     body = [(parts / n).read_text("utf-8").strip("\n") for n in ["00-header.md"] + done]
@@ -762,7 +768,13 @@ def finish(workdir: Path, mode: str) -> dict:
         return {"route": "finish-unavailable", "reason": f"no {part.name}"}
     out = workdir / f"{mode}.md"
     os.replace(part, out)
-    shutil.rmtree(workdir / f".{mode}.parts", ignore_errors=True)
+    parts = workdir / f".{mode}.parts"
+    try:
+        if parts.exists():
+            shutil.rmtree(parts)
+    except OSError as e:
+        return {"route": "finished", "path": str(out), "leftover": str(parts),
+                "reason": f"could not remove {parts.name}: {e}"}
     return {"route": "finished", "path": str(out)}
 
 
@@ -770,29 +782,44 @@ LIMITATION_PHRASES = (
     "future work", "future research", "remains unclear", "remains poorly understood",
     "has not been examined", "limited evidence", "little is known", "is left for",
     "we leave", "beyond the scope", "limitation", "to our knowledge",
-    "does not address", "not yet")
+    "does not address", "not yet", "in the future", "open question", "remains open")
 _SECTION_RE = re.compile(r"^\s*\\(?:sub)*section\*?\{(.*)\}")
 
 
-def _limitation_hits(text: str, file: str, latex: bool) -> list[dict]:
-    hits, section, para = [], "", []
+_MARKER_RE = re.compile(r"^% \[ppread\] (>>>|<<<) (.+?)\s*$")
+
+
+def _limitation_hits(text: str, file: str, latex: bool,
+                     origin: str | None = None) -> list[dict]:
+    """origin is None except for source.tex, whose provenance markers name the
+    source file each line came from; origin is then the top-level file."""
+    hits, section, para, stack = [], "", [], []
 
     def flush() -> None:
         if not para:
             return
         joined, starts = "", []
-        for no, s in para:
-            starts.append((len(joined), no))
+        for no, s, src in para:
+            starts.append((len(joined), no, src))
             joined += s + " "
         for m in re.finditer(r"\S.*?(?:[.!?](?=\s|$)|$)", joined, re.S):
             s = " ".join(m.group().split())
             low = s.lower()
             if s and any(p in low for p in LIMITATION_PHRASES):
-                line = [no for off, no in starts if off <= m.start()][-1]
-                hits.append({"sentence": s, "section": section, "file": file, "line": line})
+                _, line, src = [t for t in starts if t[0] <= m.start()][-1]
+                hit = {"sentence": s, "section": section, "file": file, "line": line}
+                if origin is not None:
+                    hit["origin"] = src
+                hits.append(hit)
         para.clear()
 
     for no, raw in enumerate(text.splitlines(), 1):
+        if origin is not None and (mk := _MARKER_RE.match(raw)):
+            if mk.group(1) == ">>>":
+                stack.append(mk.group(2))
+            elif stack:
+                stack.pop()
+            continue
         if latex and raw.lstrip().startswith("%"):
             continue
         if latex:
@@ -802,7 +829,7 @@ def _limitation_hits(text: str, file: str, latex: bool) -> list[dict]:
             flush()
             section = " ".join(m.group(1).split())
         elif raw.strip():
-            para.append((no, raw.strip()))
+            para.append((no, raw.strip(), stack[-1] if stack else origin))
         else:
             flush()
     flush()
@@ -811,7 +838,14 @@ def _limitation_hits(text: str, file: str, latex: bool) -> list[dict]:
 
 def limitations(workdir: Path) -> dict:
     """Sentences carrying a limitation phrase, verbatim, from the best source on
-    disk: LaTeX, then the work dir's source.md, then the folder's PDF."""
+    disk: the expanded source.tex, src/*.tex, the work dir's source.md, the PDF."""
+    st = workdir / "source.tex"
+    if st.is_file():
+        main = find_main_tex(workdir / "src") if (workdir / "src").is_dir() else None
+        top = main.relative_to(workdir / "src").as_posix() if main else ""
+        return {"route": "limitations", "source": str(st),
+                "hits": _limitation_hits(st.read_text("utf-8", errors="replace"),
+                                         "source.tex", True, top)}
     tex = sorted((workdir / "src").rglob("*.tex")) if (workdir / "src").is_dir() else []
     if tex:
         hits = []
