@@ -1,16 +1,18 @@
-# Primer Figures and Tables Implementation Plan
+# Primer Figures and Tables, Quiz Mode Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 導讀 `primer.md` lets the reader understand every figure and every table of the paper, beside the prerequisites, Abstract, Introduction and Conclusion.
+**Goal:** (A) 導讀 `primer.md` lets the reader understand every figure and every table of the paper, beside the prerequisites, Abstract, Introduction and Conclusion. (B) A `--quiz` mode that questions the reader one question at a time and grades each answer against the paper, plus `--check` for the reader's own notes, both recorded in `quiz.md`. (C) 精讀 tells an evidence gap from a reasoning gap; 通讀's further reading says what kind of evidence each paper adds.
 
-**Architecture:** `fetch.py` gains `--floats WORKDIR`, a deterministic inventory of every figure and table (from `source.tex`, else a caption scan of `source.md` or the PDF) that also puts a viewable PNG of every figure into `assets/<slug>/`. `lecture-format.md` replaces〈方法速覽〉with〈圖表導覽〉, one unit per numbered caption. `SKILL.md` plans the primer from the inventory and writes the new section in bounded passes.
+**Architecture:** (A) `fetch.py` gains `--floats WORKDIR`, a deterministic inventory of every figure and table (from `source.tex`, else a caption scan of `source.md` or the PDF) that also puts a viewable PNG of every figure into `assets/<slug>/`. `lecture-format.md` replaces〈方法速覽〉with〈圖表導覽〉, one unit per numbered caption. `SKILL.md` plans the primer from the inventory and writes the new section in bounded passes. (B) No `fetch.py` change: the quiz contract goes into `questions.md` (what to ask and how to answer is that file's concern), the workflow into `SKILL.md`; a test pins that `quiz.md` is never mistaken for a lecture. (C) Two columns in `lecture-format.md`.
 
 **Tech Stack:** Python 3 standard library; optional `pdftoppm`, `pdftotext` (poppler) and `gs` (Ghostscript); Markdown specs; `tests/offline_checks.py` (plain asserts, `CHECKS` list).
 
-**Spec:** this plan's Design section. The user's request (2026-11-01): 導讀要提供先備知識、摘要、Introduction、Conclusion、圖、表的說明，讓讀者看懂每張圖和表格。The user declined design questions ("每篇論文都不一樣"), so the decisions below are the planner's calls.
+**Spec:** this plan's Design sections. Part A — the user's request (2026-11-01): 導讀要提供先備知識、摘要、Introduction、Conclusion、圖、表的說明，讓讀者看懂每張圖和表格; the user declined design questions ("每篇論文都不一樣"), so A's decisions are the planner's calls. Parts B and C — the user's approval (2026-11-03) of the analysis of three literature-review prompts: add quiz mode, with both open design questions decided as proposed (an interactive mode is allowed; sessions are recorded). The research-direction mode from the same analysis is deferred to issue #37.
 
-## Design
+**Parts are independent:** A (Tasks 1–4), B (Tasks 5–6) and C (Task 7) touch disjoint sections; Task 8 closes all three. Any part can ship without the others.
+
+## Design A — primer figures and tables
 
 **Why.** A primer that skips the figures and tables leaves the reader unable to open the paper's evidence: the results live in tables, the method lives in the architecture figure. Today the primer has no figure units at all and broad gives units only to figures a claim cites.
 
@@ -57,6 +59,80 @@ Appendix floats use a short form: caption + 中文翻譯 + embed/transcription +
 - caption-scan route (no `source.tex`): `"inventory": "caption-scan"`; each float is `{"kind", "number" (as printed: "3", "A1", "IV"), "caption", "line", "page" (PDF only), "asset" (PDF only: the rendered page)}`; no `graphics`/`captions`/`ordinal`.
 - `{"route": "floats-unavailable", "reason": …}` when there is nothing to read.
 
+## Design B — quiz mode
+
+**Why.** Every lecture today is one-way: the reader reads, and each question's reference answer sits one click away, so nothing forces recall. Being made to retrieve an answer is remembered markedly better a week later than rereading the same material (the testing effect; Roediger & Karpicke 2006, "Test-Enhanced Learning", *Psychological Science* — the claim stays out of every lecture unless `--verify` confirms the title). `--check` serves the Zettelkasten boundary instead of crossing it: it never writes the reader's note, it only checks the one the reader wrote. Slides 深讀 already checks a student's notes (`slides-format.md:68-77`), so the separation rule exists.
+
+**Invocation.**
+
+| Command | Does |
+|---|---|
+| `/ppread --quiz <source>` | Questions the reader on what the finished lectures covered, one question per message, grades each answer |
+| `/ppread --check <note path> <source>` | Checks every claim in the reader's own note against the source |
+
+Both work on papers and slides. Both flags are stripped before `fetch.py`, which runs as Step 0 only to locate the folder and its `docs`; no lecture is fetched-for or written.
+
+**Gate.** At least one lecture in `docs` must be finished (state not `absent` and not `partial`). Otherwise stop with one line: the quiz asks about what a lecture taught, run `/ppread <source>` first. That is a stop, not a question.
+
+**The no-questions principle is restated, not dropped.** `SKILL.md:20` becomes: writing a lecture never stops to ask a choice it can make itself; `--quiz` and `--check` are conversations the reader started, and their questions are the content, not choices. The fetch-failure questions are unchanged.
+
+**Scope.** Questions come only from what the finished lectures cover — primer: Abstract, Introduction, Conclusion, prerequisites, every figure and table; broad: every section, the author-stated limitations, the context; deep: also the argument chain, claims versus evidence, design decisions. Slides by their own modes. Never reuse a lecture's printed `[!question]` verbatim: its answer is visible in the same file.
+
+**Session.**
+
+1. Default 5 questions. The reader can end at any message (「停」/「stop」) or ask for more.
+2. Order: open points from `quiz.md`〈待加強〉first, oldest first; then questions not asked in any earlier session, spread over the scope.
+3. Four question types, mixed: 回想 (a definition, a number with its condition), 解釋 (why or how a part works), 讀圖表 (one figure or table: the embed or transcription is shown, the reader reads a value or explains a mark), 推演 (what changes if one design choice changes).
+4. One question per message. No hint and no reference answer before the reader answers.
+5. Grading: the expected answer is split into 2–3 key points; each gets `正確`／`部分正確`／`錯誤`／`遺漏`. Every point that is not `正確` quotes the source verbatim (`> ` original, then 中文翻譯) with its location (`§3.2`, `Table 2`, slide 12 / PDF p.14). A claim in the answer that the source never addresses is `論文未說明`, not `錯誤`.
+6. At most one follow-up question per question, aimed at the missed point; then the next question.
+7. After every graded answer, append it to `quiz.md` before asking the next question, so an interrupted session loses at most the question in progress.
+
+**`--check`.** Read the note; never edit it, move it, or write beside it. Split it into claims (one per sentence or bullet). Each claim gets `正確`／`誤讀`／`數字錯誤`／`作者未說`／`個人觀點（不查證）`; every non-`正確` quotes the source with its location. Describe what is wrong; never offer a replacement sentence — the note must stay in the reader's own words. Report the table in the conversation and append it to `quiz.md`; every `誤讀` and `數字錯誤` becomes an open point.
+
+**`quiz.md`** in the paper or chapter folder:
+
+```markdown
+---
+type: quiz
+generated: claude
+title: Attention Is All You Need
+arxiv: 1706.03762
+doi:
+sessions: 2
+last_quiz: 2026-11-03
+open_points: 1
+---
+
+## 待加強
+
+- [ ] base model 與 big model 的訓練時數各是多少（§5.2）— 首次答錯 2026-11-03，累計 1 次
+
+## 紀錄
+
+### 2026-11-03 quiz（範圍：primer）
+
+#### Q1　〈讀圖表〉Table 2 中 EN-DE 的 28.4 與 26.36 各是哪個系統？差距在數什麼？
+
+> [!quote]- 作答原文
+> （the reader's answer, verbatim）
+
+- 正確　28.4 是 Transformer (big)
+- 錯誤　⋯⋯
+  > （source quote）
+  （中文翻譯，Table 2）
+```
+
+- Identity keys copied from the lecture's front matter (`title`, `arxiv`, `doi`; slides also `course`). **No `mode` key and never `type: reading`**: that keeps `is_lecture()` false, keeps it out of `papers.base` (which filters `type == "reading"`), and keeps the folder checks ignoring it — the same way they ignore the reader's own `notes.md`. The template is the planner's call; field names are fixed by this section.
+- An open point answered `正確` in a later session is ticked `- [x]` and stays; `open_points` counts the unticked ones.
+- `questions.md`〈邊界〉is amended: answers given inside `--quiz`/`--check` are recorded **verbatim** in `quiz.md` only — never edited, summarised or turned into notes; everywhere else the existing rule holds.
+- Non-goals: no `quiz` column in `--list`, no change to `papers.base` (it is written once and never overwritten; an Obsidian view on `type == "quiz"` is the reader's to add), no spaced-repetition schedule.
+
+## Design C — gap types and evidence kinds
+
+- 精讀〈主張與證據〉gains a column `缺口類型` after `強度`, values `證據缺口`／`論證跳躍`／`—`. `證據缺口`: the inference from evidence to claim would hold, but the measurement is missing or is a proxy (the FLOPs row, the parallelisation row). `論證跳躍`: even if every cited result is correct it would not establish the claim, because a step of reasoning is missing (a theoretical O(1) sequential-operation count offered as proof of faster wall-clock training, with memory bandwidth and kernel launch overhead unaddressed). `支持` → `—`; `無對應證據` → `證據缺口`. Reason: the two failures call for different repairs — more data versus repaired reasoning — and a bare `未支持` hides which.
+- 通讀〈延伸閱讀〉gains a column `類型`, values `方法來源`／`對照做法`／`後續延伸`／`複現或反證`. When `--graph` returns any paper that replicates, contradicts or re-evaluates this one, at least one row is `複現或反證`. Reason: the reader's next paper should be chosen by what kind of evidence it adds, not only by topic.
+
 ## Global Constraints
 
 - `fetch.py` stays standard-library only; `pdftoppm`, `pdftotext`, `gs` are optional and detected with `shutil.which`, like `pdfinfo`.
@@ -64,9 +140,12 @@ Appendix floats use a short form: caption + 中文翻譯 + embed/transcription +
 - Assets go to `<workdir.parent>/assets/<workdir.name>/` — the existing `assets/<slug>/` convention, which `list_library` already skips. File name = path inside `src/` with `/` replaced by `-`, extension `.png` after conversion (`figs/arch.pdf` → `figs-arch.png`; `a.png` → `a.png`).
 - Conversion: PDF → `pdftoppm -png -r 150 -singlefile -f 1 -l 1 <in> <out-stem>`; EPS → `gs -q -dSAFER -dBATCH -dNOPAUSE -dEPSCrop -sDEVICE=png16m -r150 -o <out> <in>`; PDF page for caption scan → `pdftoppm -png -r 110 -singlefile -f P -l P <pdf> assets/<slug>/page-P`. Every subprocess has `timeout=60`.
 - A destination that already exists and is not older than its source is not rewritten.
-- `questions.md`, slides workflow and slide files do not change.
+- No new deployable file: the quiz contract goes into `questions.md`. `slides.md` and `slides-format.md` do not change (quiz on slides is driven from `SKILL.md`).
+- `quiz.md` is the log's file name; it is never added to `DOC_FILES`.
 - Branch `feature/primer-figures-tables` off `develop`. No merge or PR without the user's explicit instruction.
-- Commits: Conventional Commits subject; body = technical bullets in Chinese, blank line, `問題：關於導讀的版本，還需要讓我可以看懂每張圖和表格。導讀要提供：先備知識、摘要、introduction、summary、圖、表的說明`, blank line, `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- Commits: Conventional Commits subject; body = technical bullets in Chinese, blank line, the part's 問題 line, blank line, `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+  - Part A: `問題：關於導讀的版本，還需要讓我可以看懂每張圖和表格。導讀要提供：先備知識、摘要、introduction、summary、圖、表的說明`
+  - Parts B, C and Task 8: `問題：我想要新增 quiz模式，要先決定的兩個設計問題也支持，然後把研究方向模式寫入issue`
 - Run `python3 tests/offline_checks.py` after every `fetch.py` change; every line must print `ok`.
 
 ## Review Focus
@@ -76,6 +155,14 @@ Appendix floats use a short form: caption + 中文翻譯 + embed/transcription +
 3. **`\includegraphics[width=...]{figs/arch}` with no extension, or a missing file,** must resolve to `figs/arch.pdf` or report `asset: null` with a reason — never raise. Pinned in Task 2 (`check_floats_assets`).
 4. **Re-running `--floats`** must not re-convert an up-to-date asset and must return identical JSON. Pinned in Task 2.
 5. **A body line starting "Table 2. shows…" before the real caption "Table 2: …"** must not win over the colon caption; IEEE `TABLE IV` and `Fig. 3.` must be found. Pinned in Task 3 (`check_floats_caption_scan`).
+
+Part B (no executable code beyond the pin test; the rest is enforced by contract wording and reviewed against these):
+
+6. **`quiz.md` whose `title` differs from the lecture's** (a typo, a renamed paper) must not trigger `route: conflict`, change `library_row`'s title, or appear in `lecture_docs`. Pinned in Task 5 (`check_quiz_log_is_not_a_lecture`).
+7. **The reader answers "不知道"** or leaves the question blank: every key point is `遺漏`, each quoted with its source, and the point enters〈待加強〉— never a hint followed by the same question again.
+8. **The reader's answer contains a true statement the paper never makes**: graded `論文未說明`, not `錯誤`, and not added to〈待加強〉.
+9. **`--check` on a note that paraphrases correctly in different words**: `正確` — the check compares meaning, not wording, and never suggests a rewording.
+10. **`--quiz` on a folder whose only lecture is `partial`**: the gate stops; it does not quiz from a half-written lecture.
 
 ---
 
@@ -305,15 +392,117 @@ git add lecture-format.md SKILL.md
 git commit   # subject: docs(format): primer explains every figure and table
 ```
 
-### Task 5: Project docs, deploy and live check
+### Task 5: Quiz contract in `questions.md`
 
 **Files:**
-- Modify: `CLAUDE.md` (What this is: primer sentence; Architecture `fetch.py` list adds figure/table inventory (`--floats`); Non-obvious decisions: new bullet; Testing: list the three new checks and the live case)
-- Modify: `~/computer-science/TOOLS.md` (`/ppread` paper row; separate repo, commit on its `main` per that repo's CLAUDE.md)
+- Modify: `questions.md` (new top-level `# 拷問與筆記檢查` part after the paper parts, before `# 簡報`; `〈邊界〉` at `:110-115`)
+- Test: `tests/offline_checks.py` (new `check_quiz_log_is_not_a_lecture`, added to `CHECKS`)
 
-- [ ] **Step 1: Add the CLAUDE.md decision bullet**
+**Interfaces:**
+- Produces: the `quiz.md` format and the grading values of Design B, which Task 6's `SKILL.md` steps cite by section name (`拷問`, `筆記檢查`, `紀錄檔 quiz.md`).
 
-Content: the primer explains every figure and table, so「every」must be checkable — `--floats` inventories numbered captions deterministically (subfigure captions are not numbered; `numbering: custom` defers to printed numbers) and converts PDF/EPS figures to PNG because the agent cannot view them, which was the reason most figure units used to say "could not be viewed"; caption scan is the lower-fidelity fallback and says so in `inventory`.
+- [ ] **Step 1: Write the pin test** `check_quiz_log_is_not_a_lecture`:
+
+```python
+def check_quiz_log_is_not_a_lecture() -> None:
+    d = Path(tempfile.mkdtemp()) / "paper-a"
+    write_doc(d / "broad.md", {**A, "mode": "broad"})
+    before = fetch.lecture_docs(d)
+    (d / "quiz.md").write_text(
+        "---\ntype: quiz\ngenerated: claude\ntitle: Paper A (typo)\n"
+        "arxiv: 1111.11111\nsessions: 1\nopen_points: 1\n---\n\n## 待加強\n", "utf-8")
+    assert fetch.folder_conflict(d, A_META, "paper-a") is None
+    assert fetch.library_row(d, "paper-a")["title"] == "Paper A"
+    assert fetch.lecture_docs(d) == before
+    rows = fetch.list_library(d.parent)["papers"]
+    assert [r["title"] for r in rows] == ["Paper A"], rows
+```
+
+- [ ] **Step 2: Run it**
+
+Run: `python3 tests/offline_checks.py`
+Expected: every line `ok`, including `ok  check_quiz_log_is_not_a_lecture`. This pins existing behaviour (no `fetch.py` change is planned); if it fails, `quiz.md` would be read as a lecture — fix `fetch.py` so that a file outside `DOC_FILES` is never read for identity, and add that to the commit.
+
+- [ ] **Step 3: Write the `questions.md` quiz part**
+
+Sections, each to Design B: `## 拷問`（gate、scope、session steps 1–7、four question types with one example each taken from 1706.03762 and its location）、`## 筆記檢查`（claim split、five verdicts、no replacement sentence）、`## 紀錄檔 quiz.md`（the template, the front-matter rules and why `mode` and `type: reading` are forbidden, ticking rule）. 〈邊界〉gains the verbatim-in-`quiz.md` exception, worded so that everything outside `--quiz`/`--check` is unchanged.
+
+- [ ] **Step 4: Verify the wording covers Review Focus 7–10**
+
+Run: `grep -n '不知道\|論文未說明\|不提供改寫\|partial' questions.md`
+Expected: each of Review Focus 7–10 has a sentence in the new part (blank answer → all `遺漏`; true-but-unstated → `論文未說明`, not an open point; paraphrase → `正確`, no rewording; `partial` → gate stops).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add questions.md tests/offline_checks.py
+git commit   # subject: docs(questions): quiz and note-check contract
+```
+
+### Task 6: Quiz workflow in `SKILL.md`
+
+**Files:**
+- Modify: `SKILL.md:3` (description), `:20-21` (the no-questions principle), `:30-50` (Invocation table and flag stripping), new `## Quiz and note check` section after Step 4 (before「Listing」)
+
+**Interfaces:**
+- Consumes: `questions.md`〈拷問〉〈筆記檢查〉〈紀錄檔 quiz.md〉from Task 5; Step 0's `fetch.py` JSON (`workdir`, `docs`).
+
+- [ ] **Step 1: Edit the principle and the invocation**
+
+`:20` to Design B's restatement. Invocation table gains the two rows of Design B. The strip list becomes `--primer`/`--broad`/`--deep`/`--research`/`--quiz`/`--check <note>`; `--check` takes the next argument as the note path, and the path is never passed to `fetch.py`.
+
+- [ ] **Step 2: Write `## Quiz and note check`**
+
+Steps: (1) Step 0 only — on any non-success route handle it as Step 0 says; on success apply the gate to `docs`. (2) Read every finished lecture and, if present, `quiz.md`; the source file (`source_path`, `.<mode>.parts/source.md`, or the PDF) is where quotes come from — never quote a lecture as if it were the paper. (3) Run the session or the check exactly as `questions.md` says. (4) Create `quiz.md` on the first graded answer, not before (an abandoned quiz leaves nothing). Description (`:3`): add「--quiz questions the reader one question at a time on what the finished lectures cover and grades each answer against the source; --check checks the reader's own note claim by claim without rewriting it; both keep a verbatim log in quiz.md」; replace「Never stops to ask a choice it can make itself」with「Writing a lecture never stops to ask a choice it can make itself」.
+
+- [ ] **Step 3: Verify**
+
+Run: `grep -n -- '--quiz\|--check\|quiz.md' SKILL.md`
+Expected: hits in the description, the principle, the Invocation table, the strip list and the new section.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add SKILL.md
+git commit   # subject: docs(skill): add --quiz and --check
+```
+
+### Task 7: Gap types in 精讀, evidence kinds in 通讀
+
+**Files:**
+- Modify: `lecture-format.md:674-693` (精讀〈主張與證據〉table and rules), `:559-570` (通讀〈延伸閱讀〉table and rules)
+- Modify: `questions.md` 精讀 fixed questions only if one of D1–D5 asks about evidence strength — then its reference-answer note names `缺口類型`
+
+- [ ] **Step 1: Add `缺口類型` to the claims table**
+
+Column after `強度`; exemplar rows: FLOPs row `證據缺口`, parallelisation row `證據缺口`, ConvS2S row `—`. Rules from Design C, with the 論證跳躍 definition and its O(1) example verbatim from Design C.
+
+- [ ] **Step 2: Add `類型` to the further-reading table**
+
+Column after `為什麼讀`; exemplar Bahdanau row `對照做法`; rules from Design C.
+
+- [ ] **Step 3: Verify**
+
+Run: `grep -n '缺口類型\|複現或反證' lecture-format.md SKILL.md`
+Expected: both terms in `lecture-format.md`; if `SKILL.md`'s checker instructions (broad/deep checker brief) list the table columns, they name the new columns too.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add lecture-format.md questions.md SKILL.md
+git commit   # subject: docs(format): gap types in deep, evidence kinds in broad
+```
+
+### Task 8: Project docs, deploy and live check
+
+**Files:**
+- Modify: `CLAUDE.md` (What this is: primer sentence and the quiz sentence; Architecture: `fetch.py` list adds `--floats`, `questions.md` line adds the quiz contract; Non-obvious decisions: two new bullets, and the「The skill never asks a choice it can make itself」bullet restated; Testing: list the four new checks and the live case)
+- Modify: `~/computer-science/TOOLS.md` (`/ppread` paper row, a new `/ppread --quiz｜--check` row, the「選工具速查」row; separate repo, commit on its `main` per that repo's CLAUDE.md)
+
+- [ ] **Step 1: Add the CLAUDE.md decision bullets**
+
+Figures: the primer explains every figure and table, so「every」must be checkable — `--floats` inventories numbered captions deterministically (subfigure captions are not numbered; `numbering: custom` defers to printed numbers) and converts PDF/EPS figures to PNG because the agent cannot view them, which was the reason most figure units used to say "could not be viewed"; caption scan is the lower-fidelity fallback and says so in `inventory`.
+Quiz: lectures are one-way and their answers sit one click away; `--quiz` makes the reader retrieve, `--check` checks the reader's own note without writing it, which serves the Zettelkasten boundary; `quiz.md` has no `mode` and is not `type: reading`, so it is invisible to every lecture check; answers are logged verbatim, never turned into notes; the topic-level research mode is deferred to issue #37, to be designed with the Obsidian paper map.
 
 - [ ] **Step 2: Live check**
 
@@ -325,11 +514,16 @@ Expected: `inventory: latex`; figure ordinals 1–5 and table ordinals 1–4 mat
 Run: `./deploy.sh && python3 tests/offline_checks.py`
 Expected: `deployed -> /home/wassup/.claude/skills/ppread`, every line `ok`
 
-- [ ] **Step 4: Commit both repos**
+- [ ] **Step 4: Live quiz check (manual)**
+
+On a library folder that already has a finished lecture (`python3 fetch.py --list` shows one), run `/ppread --quiz <its source>`, answer two questions — one correctly, one with「不知道」— then「停」.
+Expected: one question per message; the second answer's points all `遺漏`, each with a verbatim source quote; `quiz.md` created with `type: quiz`, no `mode`, `sessions: 1`, `open_points` ≥ 1; `python3 fetch.py --list` output identical to before the quiz (no new row, no `conflict`). If no finished lecture exists in the library, or the check is not run in this conversation, open a GitHub issue for it per the user's global rule (what to run, what to expect, why it was not run) instead of marking the step done.
+
+- [ ] **Step 5: Commit both repos**
 
 ```bash
 git add CLAUDE.md
-git commit   # subject: docs(claude): record the figure and table inventory
+git commit   # subject: docs(claude): record the figure inventory and quiz mode
 git -C ~/computer-science add TOOLS.md
-git -C ~/computer-science commit   # subject: docs(tools): ppread primer explains every figure and table
+git -C ~/computer-science commit   # subject: docs(tools): ppread primer figures and quiz mode
 ```
