@@ -564,6 +564,10 @@ def expand(path: Path, root: Path, seen: set[Path], depth: int = 0) -> str:
     text = path.read_text("utf-8", errors="replace")
 
     def sub(m: re.Match[str]) -> str:
+        # A commented-out \input is the authors cutting a section: leave it as a
+        # comment, or its file would land in the body and survive comment stripping.
+        if re.search(r"(?<!\\)%", text[text.rfind("\n", 0, m.start()) + 1:m.start()]):
+            return m.group(0)
         target = resolve_input(m.group(1), path.parent, root)
         if target is None:
             return f"% [ppread] missing include: {m.group(1)}\n"

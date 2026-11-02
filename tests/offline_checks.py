@@ -969,7 +969,22 @@ def check_floats_caption_scan() -> None:
     assert "page" not in m["floats"][0] and "asset" not in m["floats"][0]
 
 
+def check_commented_input_not_expanded() -> None:
+    root = Path(tempfile.mkdtemp())
+    (root / "main.tex").write_text(
+        "\\documentclass{article}\n\\begin{document}\n\\input{kept}\n"
+        "%\\input{cut}\n  % \\include{cut}\nText 5\\% \\input{also}\n\\end{document}\n", "utf-8")
+    for n, body in (("kept", "KEPT"), ("cut", "CUT"), ("also", "ALSO")):
+        (root / f"{n}.tex").write_text(body + "\n", "utf-8")
+    text = fetch.assemble_latex(root, strip_comments=True)
+    assert "KEPT" in text and "ALSO" in text, text
+    assert "CUT" not in text and "cut.tex" not in text, text
+    kept = fetch.assemble_latex(root, strip_comments=False)
+    assert "%\\input{cut}" in kept and "CUT" not in kept, kept
+
+
 CHECKS = [
+    check_commented_input_not_expanded,
     check_floats_caption_scan,
     check_floats_assets,
     check_floats_latex,
