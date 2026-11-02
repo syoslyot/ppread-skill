@@ -125,7 +125,7 @@ papers; the rule that actually decides, for every combination of either kind, is
     the file's last `##` heading onward and rewrite that section, then continue —
     sections are written one per pass, so only the last can be incomplete. Inside
    〈圖表導覽〉the pass is a batch of units, so cut from the last `###` unit heading
-    instead. A `.primer.parts/` holds only `source.md`; it is not a parts plan.
+    instead.
   - Restart only when the user explicitly asks: delete `<mode>.part.md` and
     `.<mode>.parts/`, then begin at Step 1.
 - **`legacy: true`**: a `lecture.md` from ppread 0.1 is in the folder. It does not
@@ -224,6 +224,8 @@ one — and ask which case it is:
         broad.md                    # what you write (通讀)
         deep.md                     # what you write (精讀)
         .deep.parts/                # hidden work directory while 通讀/精讀 is in progress
+        .source.md                  # converted text on needs-html/needs-pdf; kept for --quiz
+    assets/attention-is-all-you-need/   # figure PNGs placed by --floats, src/ tree kept
 ~/Downloads/attention-is-all-you-need/   # local route: beside the file itself
         1706.03762.pdf              # the file, moved in
 ```
@@ -259,8 +261,7 @@ block and **carry on without waiting** — it informs; it does not ask:
   the section numbers)
 - The〈圖表導覽〉units: run `python3 ~/.claude/skills/ppread/fetch.py --floats
   <workdir>` (on `needs-html` first save the converted text as
-  `<workdir>/.primer.parts/source.md`; on `needs-pdf` keep the downloaded PDF in
-  `<workdir>`). List every numbered caption it returns, in its order, as one
+  `<workdir>/.source.md`; on `needs-pdf` keep the downloaded PDF in `<workdir>`). List every numbered caption it returns, in its order, as one
   planned unit; state `inventory`, `numbering`, which units are appendix, and every
   `asset: null` with its `reason`. `floats-unavailable` → say so; the units are
   then planned from the captions you read, and the status line says the list
@@ -295,15 +296,18 @@ rate-limit refusals, and a resumed run repeats no call.
 **Broad and deep** keep the results in the hidden work directory:
 
 - Create `<workdir>/.<mode>.parts/`. On `needs-html` and `needs-pdf`, where
-  `fetch.py` leaves no text on disk, save the converted text there as
-  `source.md` — the writers and `--limitations` read it.
+  `fetch.py` leaves no text on disk, save the converted text as
+  `<workdir>/.source.md` (skip it when it already exists) — the writers,
+  `--limitations`, `--floats` and a later `--quiz` read it. It lives outside the
+  parts directory because `--finish` deletes that directory, and a quiz still needs
+  something to quote; the leading dot keeps it out of `--list` and the folder checks.
 - Save every raw JSON result below in `.<mode>.parts/context.json`, as one object
   keyed `graph`, `verify` (a list of results) and `limitations`. If `context.json`
   already exists (a resumed run), read it and make no call it already answers.
 
-**Primer** keeps its results in the conversation. Its only file besides the
-lecture is `<workdir>/.primer.parts/source.md` on `needs-html` (Step 1), which
-`--floats` and `--limitations` read and `--finish` removes.
+**Primer** keeps its results in the conversation and creates no parts directory;
+its only file besides the lecture is `<workdir>/.source.md` on `needs-html`
+(Step 1), the same persistent file broad and deep use.
 
 ### The citation graph (broad)
 
@@ -392,7 +396,7 @@ hidden from `--list` and the folder checks; part numbers are two digits, 01–99
    false`), the header block, and〈讀懂它需要先知道的〉when this lecture owns it —
    else the one line linking to the lecture that does.
 2. **Briefs.** For each part of the Step 1 plan write `brief-NN.tmp.md`: the section
-   range; the source path (`source_path`, or `.<mode>.parts/source.md`); which
+   range; the source path (`source_path`, or `<workdir>/.source.md`); which
    `lecture-format.md` parts to read; the terms it owns (explain fully); the terms
    owned elsewhere, with where (link, never re-explain); its unit budget under
    `lecture-format.md`'s 通讀 caps; the verified outside papers it may cite,
@@ -492,7 +496,7 @@ and〈紀錄檔 quiz.md〉first and follow them literally.
    at least one mode neither `absent` nor `partial`, else stop with one line.
 2. **Read before asking.** Read every finished lecture (the scope) and `quiz.md` if
    it exists (open points first, questions already asked never repeated). Quotes
-   come from the source — `source_path`, `.<mode>.parts/source.md`, the slide
+   come from the source — `source_path`, `<workdir>/.source.md`, the slide
    deck or the paper PDF — never from a lecture, which is a translation and an
    explanation, not the paper.
 3. **Run the session** exactly as〈拷問〉says: one question per message, no hint

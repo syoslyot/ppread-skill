@@ -857,7 +857,9 @@ def limitations(workdir: Path) -> dict:
             hits += _limitation_hits(f.read_text("utf-8", errors="replace"),
                                      f.relative_to(workdir / "src").as_posix(), True)
         return {"route": "limitations", "source": str(workdir / "src"), "hits": hits}
-    for md in sorted(workdir.glob(".*.parts/source.md")):
+    for md in [workdir / ".source.md"] + sorted(workdir.glob(".*.parts/source.md")):
+        if not md.is_file():
+            continue
         return {"route": "limitations", "source": str(md),
                 "hits": _limitation_hits(md.read_text("utf-8", errors="replace"), md.name, False)}
     pdfs = sorted(workdir.glob("*.pdf"))
@@ -883,6 +885,8 @@ _FLOAT_RE = re.compile(r"\\begin\{((?:wrap|sideways)?(figure|table)\*?)\}")
 _FLOAT_TOKEN_RE = re.compile(r"\\(includegraphics|caption|label|begin|end)\b\*?")
 # Back matter counts too: many papers put appendix floats after the bibliography
 # under \section* without ever writing \appendix (1706.03762's Figures 3-5).
+_SKIP_RE = re.compile(r"\\iffalse\b|\\begin\{comment\}")
+_IF_TOKEN_RE = re.compile(r"\\if[a-zA-Z@]*|\\fi\b")
 _APPENDIX_RE = re.compile(r"\\appendix\b|\\begin\{appendi(?:x|ces)\}"
                           r"|\\end\{thebibliography\}|\\bibliography\{")
 _RENUMBER_RE = re.compile(r"\\renewcommand\s*\{?\s*\\the(?:figure|table)\b")
@@ -949,7 +953,10 @@ def _parse_float(f: dict, body: str, counts: dict) -> None:
             continue
         elif name == "caption":
             counts[f["kind"]] += 1
-            caps.append({"ordinal": counts[f["kind"]], "label": pending,
+            inner = re.findall(r"\\label\s*\{([^}]*)\}", arg)
+            arg = re.sub(r"\\label\s*\{[^}]*\}", "", arg)
+            caps.append({"ordinal": counts[f["kind"]],
+                         "label": inner[0].strip() if inner else pending,
                          "caption": " ".join(arg.split())})
             pending = ""
         elif caps and not caps[-1]["label"]:
@@ -962,9 +969,11 @@ def _parse_float(f: dict, body: str, counts: dict) -> None:
 def latex_floats(text: str, origin_top: str = "") -> dict:
     """Every figure and table environment in source order, each with its graphics
     and numbered captions. Ordinals count numbered captions per kind and assume
-    LaTeX's default numbering; numbering is "custom" when the source redefines it."""
+    LaTeX's default numbering; numbering is "custom" when the source redefines it.
+    Floats inside \\iffalse...\\fi or a comment environment are the authors' cuts:
+    counting them would shift every later number."""
     floats, stack, counts = [], [], {"figure": 0, "table": 0}
-    appendix, custom, cur, body = False, False, None, []
+    appendix, custom, cur, body, skip, depth = False, False, None, [], "", 0
     for no, raw in enumerate(text.split("\n"), 1):
         if mk := _MARKER_RE.match(raw):
             if mk.group(1) == ">>>":
@@ -974,28 +983,53 @@ def latex_floats(text: str, origin_top: str = "") -> dict:
             continue
         if raw.lstrip().startswith("%"):
             continue
-        line = re.split(r"(?<!\\)%", raw, 1)[0]
-        custom = custom or bool(_RENUMBER_RE.search(line))
-        if cur is None:
-            appendix = appendix or bool(_APPENDIX_RE.search(line))
-            m = _FLOAT_RE.search(line)
-            if not m:
+        rest = re.split(r"(?<!\\)%", raw, 1)[0]
+        custom = custom or bool(_RENUMBER_RE.search(rest))
+        if cur is not None:
+            body.append(rest)
+        while True:
+            if cur is not None:
+                joined, tag = "\n".join(body), "\\end{" + cur["env"] + "}"
+                end = joined.find(tag)
+                if end < 0:
+                    break
+                _parse_float(cur, joined[:end], counts)
+                floats.append(cur)
+                cur, rest = None, joined[end + len(tag):]
                 continue
-            cur = {"env": m[1], "kind": m[2], "line": no,
+            if skip == "comment":
+                m = re.search(r"\\end\{comment\}", rest)
+                if not m:
+                    break
+                skip, rest = "", rest[m.end():]
+                continue
+            if skip == "if":
+                for m in _IF_TOKEN_RE.finditer(rest):
+                    depth += -1 if m[0] == "\\fi" else 1
+                    if depth == 0:
+                        skip, rest = "", rest[m.end():]
+                        break
+                if skip:
+                    break
+                continue
+            ms, mf = _SKIP_RE.search(rest), _FLOAT_RE.search(rest)
+            if ms and (not mf or ms.start() < mf.start()):
+                appendix = appendix or bool(_APPENDIX_RE.search(rest[:ms.start()]))
+                skip, depth = ("if", 1) if ms[0].startswith("\\iffalse") else ("comment", 0)
+                rest = rest[ms.end():]
+                continue
+            appendix = appendix or bool(_APPENDIX_RE.search(rest[:mf.start()] if mf else rest))
+            if not mf:
+                break
+            cur = {"env": mf[1], "kind": mf[2], "line": no,
                    "origin": stack[-1] if stack else origin_top, "appendix": appendix}
-            body = [line[m.end():]]
-        else:
-            body.append(line)
-        joined = "\n".join(body)
-        end = joined.find("\\end{" + cur["env"] + "}")
-        if end >= 0:
-            _parse_float(cur, joined[:end], counts)
-            floats.append(cur)
-            cur = None
+            body = [rest[mf.end():]]
     return {"numbering": "custom" if custom else "default", "floats": floats}
 
 
-_GRAPHIC_EXTS = (".png", ".jpg", ".jpeg", ".pdf", ".eps")
+# pdflatex's search order for an extensionless name, .eps last (latex + dvips).
+_GRAPHIC_EXTS = (".pdf", ".png", ".jpg", ".jpeg", ".eps")
+_GRAPHICSPATH_RE = re.compile(r"\\graphicspath\s*\{((?:\s*\{[^}]*\})+)\s*\}")
 
 
 def _asset(src: Path, dest_dir: Path, name: str, page: int = 1,
@@ -1006,7 +1040,7 @@ def _asset(src: Path, dest_dir: Path, name: str, page: int = 1,
     out = dest_dir / name
     if out.is_file() and out.stat().st_mtime >= src.stat().st_mtime:
         return name, None
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    out.parent.mkdir(parents=True, exist_ok=True)
     if ext in (".png", ".jpg", ".jpeg"):
         shutil.copy2(src, out)
         return name, None
@@ -1027,12 +1061,23 @@ def _asset(src: Path, dest_dir: Path, name: str, page: int = 1,
     return name, None
 
 
-def _resolve_graphic(src_dir: Path, arg: str) -> Path | None:
-    for cand in [arg] + [arg + e for e in _GRAPHIC_EXTS]:
-        p = src_dir / cand
-        if p.is_file():
-            return p
-    return None
+def _resolve_graphic(src_dir: Path, arg: str, dirs: list[str]) -> tuple[Path | None, str]:
+    """The file \\includegraphics{arg} names, searched in src/ and each
+    \\graphicspath directory. The e-print is untrusted: nothing outside src/ is
+    ever returned, and only formats an image can be made from."""
+    root, escaped = src_dir.resolve(), False
+    named = Path(arg).suffix.lower() in _GRAPHIC_EXTS
+    for d in [""] + dirs:
+        for cand in ([arg] if named else [arg + e for e in _GRAPHIC_EXTS] + [arg]):
+            p = (src_dir / d / cand).resolve()
+            if not p.is_relative_to(root):
+                escaped = True
+                continue
+            if p.is_file():
+                if p.suffix.lower() not in _GRAPHIC_EXTS:
+                    return None, "unsupported format"
+                return p, ""
+    return None, "outside src/" if escaped else "not found in src/"
 
 
 _CAPTION_RE = re.compile(
@@ -1051,7 +1096,9 @@ def _caption_scan(text: str) -> list[dict]:
         m = _CAPTION_RE.match(raw)
         if m and (m[3] or m[1] in ("TABLE", "FIGURE")):
             key = ("table" if m[1].lower().startswith("tab") else "figure", m[2])
-            rank = {":": 0, ".": 1, "": 2}[m[3]]
+            # A caption opens a paragraph; a wrapped body line rarely does.
+            opens = i == 0 or not lines[i - 1].strip() or raw.startswith("\f")
+            rank = ({":": 0, ".": 1, "": 2}[m[3]], 0 if opens else 1)
             if key not in best or rank < best[key][0]:
                 parts = [raw]
                 for nxt in lines[i + 1:i + 4]:
@@ -1078,17 +1125,20 @@ def floats(workdir: Path) -> dict:
         src_dir = workdir / "src"
         main = find_main_tex(src_dir) if src_dir.is_dir() else None
         top = main.relative_to(src_dir).as_posix() if main else ""
-        r = latex_floats(st.read_text("utf-8", errors="replace"), top)
+        text = st.read_text("utf-8", errors="replace")
+        r = latex_floats(text, top)
+        dirs = [d.strip() for m in _GRAPHICSPATH_RE.finditer(text)
+                for d in re.findall(r"\{([^}]*)\}", m[1])]
         for f in r["floats"]:
             for g in f["graphics"]:
-                p = _resolve_graphic(src_dir, g["path"])
+                p, why = _resolve_graphic(src_dir, g["path"].strip(), dirs)
                 if p is None:
-                    g |= {"asset": None, "reason": "not found in src/"}
+                    g |= {"asset": None, "reason": why}
                     continue
-                rel = p.relative_to(src_dir).as_posix()
-                name = rel.replace("/", "-")
-                if p.suffix.lower() in (".pdf", ".eps"):
-                    name = name.rsplit(".", 1)[0] + ".png"
+                # The tree under src/ is kept, and a converted file keeps its own
+                # extension before .png: vec.pdf and vec.png must not share a name.
+                rel = p.relative_to(src_dir.resolve()).as_posix()
+                name = rel + ".png" if p.suffix.lower() in (".pdf", ".eps") else rel
                 got, why = _asset(p, dest, name)
                 g |= {"path": rel, "asset": prefix + got if got else None}
                 if why:
@@ -1099,7 +1149,8 @@ def floats(workdir: Path) -> dict:
     pdfs, failed = sorted(workdir.glob("*.pdf")), ""
     if pdfs and shutil.which("pdftotext"):
         try:
-            run = subprocess.run(["pdftotext", "-layout", str(pdfs[0]), "-"],
+            # No -layout: it interleaves the two columns of a conference paper.
+            run = subprocess.run(["pdftotext", str(pdfs[0]), "-"],
                                  capture_output=True, text=True, timeout=60)
             if run.returncode or not run.stdout.strip():
                 failed = (f"pdftotext gave no text from {pdfs[0].name} "
@@ -1109,7 +1160,7 @@ def floats(workdir: Path) -> dict:
         if not failed:
             found, pages = _caption_scan(run.stdout), {}
             for e in found:
-                p = e["page"]
+                p = e.setdefault("page", 1)   # pdftotext ends every page with \f; a single page may lack it
                 if p not in pages:
                     pages[p] = _asset(pdfs[0], dest, f"page-{p}.png", page=p, dpi=110)
                 got, why = pages[p]
@@ -1118,7 +1169,9 @@ def floats(workdir: Path) -> dict:
                     e["reason"] = why
             return {"route": "floats", "inventory": "caption-scan",
                     "source": str(pdfs[0]), "floats": found}
-    for md in sorted(workdir.glob(".*.parts/source.md")):
+    for md in [workdir / ".source.md"] + sorted(workdir.glob(".*.parts/source.md")):
+        if not md.is_file():
+            continue
         return {"route": "floats", "inventory": "caption-scan", "source": str(md),
                 "floats": _caption_scan(md.read_text("utf-8", errors="replace"))}
     if failed:

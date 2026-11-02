@@ -940,14 +940,14 @@ def check_floats_assets() -> None:
         g = r["floats"][0]["graphics"]
         assert r["route"] == "floats" and r["inventory"] == "latex"
         assert [x["path"] for x in g] == ["figs/arch.pdf", "a.png", "gone"]
-        assert g[0]["asset"] == "assets/my-paper/figs-arch.png"
+        assert g[0]["asset"] == "assets/my-paper/figs/arch.pdf.png"
         assert g[1]["asset"] == "assets/my-paper/a.png"
         assert (lib / "assets" / "my-paper" / "a.png").read_bytes() == b"\x89PNG"
         assert g[2]["asset"] is None and g[2]["reason"] == "not found in src/"
         assert calls == ["pdftoppm"]
         assert fetch.floats(w) == r and calls == ["pdftoppm"]   # up to date: no re-run
         fetch.shutil.which = lambda n: None
-        (lib / "assets" / "my-paper" / "figs-arch.png").unlink()
+        (lib / "assets" / "my-paper" / "figs" / "arch.pdf.png").unlink()
         g = fetch.floats(w)["floats"][0]["graphics"]
         assert g[0]["asset"] is None and g[0]["reason"] == "pdftoppm not available"
     finally:
@@ -1014,7 +1014,99 @@ def check_quiz_log_is_not_a_lecture() -> None:
     assert [r["title"] for r in rows] == ["Paper A"], rows
 
 
+def check_floats_skipped_blocks() -> None:
+    tex = ("\\iffalse\n\\begin{figure}\\caption{cut}\\end{figure}\n\\fi\n"
+           "\\begin{comment}\n\\begin{table}\\caption{cut}\\end{table}\n\\end{comment}\n"
+           "\\begin{figure}\\caption{real}\\end{figure}\n")
+    fl = fetch.latex_floats(tex)["floats"]
+    assert [(f["kind"], f["captions"][0]["caption"], f["captions"][0]["ordinal"]) for f in fl] == [
+        ("figure", "real", 1)], fl
+
+
+def check_floats_same_line() -> None:
+    tex = ("\\begin{figure}\\caption{A}\\end{figure}\\begin{figure}\\caption{B}\\end{figure}\n"
+           "\\begin{figure}\\caption{C}\\end{figure} text \\begin{table}\\caption{T}\n\\end{table}\n")
+    fl = fetch.latex_floats(tex)["floats"]
+    assert [f["captions"][0]["caption"] for f in fl] == ["A", "B", "C", "T"], fl
+    assert [f["line"] for f in fl] == [1, 1, 2, 2], fl
+
+
+def check_floats_label_in_caption() -> None:
+    fl = fetch.latex_floats("\\begin{figure}\\caption{Foo bar.\\label{fig:in}}\\end{figure}\n")["floats"]
+    assert fl[0]["captions"] == [{"ordinal": 1, "label": "fig:in", "caption": "Foo bar."}], fl
+
+
+def check_floats_graphic_paths() -> None:
+    lib = Path(tempfile.mkdtemp()); w = lib / "p"; (w / "src" / "figures").mkdir(parents=True)
+    (lib / "secret.png").write_bytes(b"\x89PNG")
+    (w / "src" / "figures" / "gp.png").write_bytes(b"\x89PNG")
+    (w / "src" / "figs").mkdir()
+    (w / "src" / "figs" / "vec.pdf").write_bytes(b"%PDF")
+    (w / "src" / "figs" / "vec.png").write_bytes(b"\x89PNG")
+    (w / "src" / "notes").write_bytes(b"x")
+    (w / "source.tex").write_text(
+        "\\graphicspath{{figures/}}\n"
+        "\\begin{figure}\\includegraphics{../../secret.png}\\includegraphics{/etc/hostname}"
+        "\\includegraphics{gp}\\includegraphics{figs/vec}\\includegraphics{figs/vec.png}"
+        "\\includegraphics{./figs/vec.png}\\includegraphics{notes}\\caption{X.}\\end{figure}\n", "utf-8")
+    ow, orun = fetch.shutil.which, fetch.subprocess.run
+    def run(cmd, **k):
+        Path(cmd[-1] + ".png").write_bytes(b"\x89PNG-from-pdf")
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    fetch.shutil.which = lambda n: f"/usr/bin/{n}"; fetch.subprocess.run = run
+    try:
+        g = fetch.floats(w)["floats"][0]["graphics"]
+    finally:
+        fetch.shutil.which, fetch.subprocess.run = ow, orun
+    assert g[0]["asset"] is None and g[0]["reason"] == "outside src/", g[0]
+    assert g[1]["asset"] is None and g[1]["reason"] == "outside src/", g[1]
+    assert not (lib / "assets" / "p" / "..-..-secret.png").exists()
+    assert g[2]["path"] == "figures/gp.png" and g[2]["asset"] == "assets/p/figures/gp.png", g[2]
+    # pdflatex's search order: an extensionless name finds the .pdf first
+    assert g[3]["path"] == "figs/vec.pdf" and g[3]["asset"] == "assets/p/figs/vec.pdf.png", g[3]
+    assert g[4]["asset"] == "assets/p/figs/vec.png", g[4]
+    assert (lib / "assets" / "p" / "figs" / "vec.png").read_bytes() == b"\x89PNG"
+    assert g[5]["path"] == "figs/vec.png", g[5]
+    assert g[6]["asset"] is None and g[6]["reason"] == "unsupported format", g[6]
+
+
+def check_caption_scan_ties_and_flags() -> None:
+    text = "We see the gap.\nTable 2. The results are good.\n\nTable 2. Results on X.\n"
+    r = fetch._caption_scan(text)
+    assert r[0]["caption"] == "Table 2. Results on X." and r[0]["line"] == 4, r
+    w = Path(tempfile.mkdtemp()); (w / "paper.pdf").write_bytes(b"%PDF")
+    ow, orun, cmds = fetch.shutil.which, fetch.subprocess.run, []
+    fetch.shutil.which = lambda n: "/usr/bin/pdftotext" if n == "pdftotext" else None
+    def run(cmd, **k):
+        cmds.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "Table 1: T.\n", "stderr": ""})()
+    fetch.subprocess.run = run
+    try:
+        fetch.floats(w)
+    finally:
+        fetch.shutil.which, fetch.subprocess.run = ow, orun
+    assert cmds and "-layout" not in cmds[0], cmds   # -layout interleaves two columns
+
+
+def check_persistent_source_md() -> None:
+    d = Path(tempfile.mkdtemp()) / "paper-a"
+    write_doc(d / "primer.md", {**A, "mode": "primer"})
+    (d / ".source.md").write_text("Intro.\n\nFigure 1: A.\n\nWe leave X for future work.\n", "utf-8")
+    assert fetch.lecture_docs(d)["primer"] == "unread"
+    assert fetch.floats(d)["source"] == str(d / ".source.md")
+    lim = fetch.limitations(d)
+    assert lim["source"] == str(d / ".source.md") and lim["hits"], lim
+    assert fetch.folder_conflict(d, A_META, "paper-a") is None
+    assert [r["title"] for r in fetch.list_library(d.parent)["papers"]] == ["Paper A"]
+
+
 CHECKS = [
+    check_floats_skipped_blocks,
+    check_floats_same_line,
+    check_floats_label_in_caption,
+    check_floats_graphic_paths,
+    check_caption_scan_ties_and_flags,
+    check_persistent_source_md,
     check_quiz_log_is_not_a_lecture,
     check_commented_input_not_expanded,
     check_floats_caption_scan,

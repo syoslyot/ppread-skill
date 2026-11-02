@@ -199,7 +199,7 @@ LaTeX 路線的原文常夾著 `\citep`、`\citet`、`\citealp` 等巨集。這�
 ```markdown
 ### Figure 2　Scaled Dot-Product Attention 與 Multi-Head Attention
 
-![[assets/attention-is-all-you-need/Figures-ModalNet-19.png]]
+![[assets/attention-is-all-you-need/Figures/ModalNet-19.png]]
 
 > (left) Scaled Dot-Product Attention. (right) Multi-Head Attention consists of
 > several attention layers running in parallel.
@@ -412,8 +412,8 @@ Abstract、Introduction、Conclusion 逐段做段落單元。論文沒有 Conclu
 **中文翻譯**　（左）縮放點積注意力（Scaled Dot-Product Attention）。（右）多頭注意力
 （Multi-Head Attention）由數個平行運行的注意力層組成。
 
-![[assets/attention-is-all-you-need/Figures-ModalNet-19.png]]
-![[assets/attention-is-all-you-need/Figures-ModalNet-20.png]]
+![[assets/attention-is-all-you-need/Figures/ModalNet-19.png]]
+![[assets/attention-is-all-you-need/Figures/ModalNet-20.png]]
 
 - **圖上有什麼**
   - 左圖：最下方三個輸入 Q、K、V。Q 與 K 進第一個 MatMul（紫），往上依序是 Scale（黃）、
