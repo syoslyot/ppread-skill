@@ -875,6 +875,119 @@ def limitations(workdir: Path) -> dict:
             "reason": "no src/*.tex, no source.md, and no PDF readable with pdftotext"}
 
 
+_FLOAT_RE = re.compile(r"\\begin\{((?:wrap|sideways)?(figure|table)\*?)\}")
+_FLOAT_TOKEN_RE = re.compile(r"\\(includegraphics|caption|label|begin|end)\b\*?")
+_APPENDIX_RE = re.compile(r"\\appendix\b|\\begin\{appendix|\\begin\{appendices\}")
+_RENUMBER_RE = re.compile(r"\\renewcommand\s*\{?\s*\\the(?:figure|table)\b")
+
+
+def _brace_arg(s: str, i: int) -> tuple[str, int]:
+    """s[i] is '{': the content up to its matching '}' and the index after it."""
+    depth, j = 0, i
+    while j < len(s):
+        c = s[j]
+        if c == "\\":
+            j += 2
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return s[i + 1:j], j + 1
+        j += 1
+    return s[i + 1:], len(s)
+
+
+def _skip_opt(s: str, i: int) -> int:
+    """Skip whitespace and one optional [...] argument."""
+    while i < len(s) and s[i].isspace():
+        i += 1
+    if i < len(s) and s[i] == "[":
+        depth = 0
+        while i < len(s):
+            depth += {"[": 1, "]": -1}.get(s[i], 0)
+            i += 1
+            if depth == 0:
+                break
+        while i < len(s) and s[i].isspace():
+            i += 1
+    return i
+
+
+def _parse_float(f: dict, body: str, counts: dict) -> None:
+    """Fill graphics and numbered captions. A caption inside subfigure/subtable
+    is the sub-panel's and takes no number, so it is not listed."""
+    graphics, caps, depth, pending, pos = [], [], 0, "", 0
+    while m := _FLOAT_TOKEN_RE.search(body, pos):
+        name, j = m[1], m.end()
+        if name in ("begin", "end"):
+            j = _skip_opt(body, j) if name == "begin" else j
+            arg = ""
+            if j < len(body) and body[j] == "{":
+                arg, j = _brace_arg(body, j)
+            if arg in ("subfigure", "subtable"):
+                depth += 1 if name == "begin" else -1
+            pos = j
+            continue
+        j = _skip_opt(body, j)
+        if j >= len(body) or body[j] != "{":
+            pos = j
+            continue
+        arg, j = _brace_arg(body, j)
+        pos = j
+        if name == "includegraphics":
+            graphics.append({"path": arg.strip()})
+        elif depth:
+            continue
+        elif name == "caption":
+            counts[f["kind"]] += 1
+            caps.append({"ordinal": counts[f["kind"]], "label": pending,
+                         "caption": " ".join(arg.split())})
+            pending = ""
+        elif caps and not caps[-1]["label"]:
+            caps[-1]["label"] = arg.strip()
+        else:
+            pending = arg.strip()
+    f["graphics"], f["captions"] = graphics, caps
+
+
+def latex_floats(text: str, origin_top: str = "") -> dict:
+    """Every figure and table environment in source order, each with its graphics
+    and numbered captions. Ordinals count numbered captions per kind and assume
+    LaTeX's default numbering; numbering is "custom" when the source redefines it."""
+    floats, stack, counts = [], [], {"figure": 0, "table": 0}
+    appendix, custom, cur, body = False, False, None, []
+    for no, raw in enumerate(text.split("\n"), 1):
+        if mk := _MARKER_RE.match(raw):
+            if mk.group(1) == ">>>":
+                stack.append(mk.group(2))
+            elif stack:
+                stack.pop()
+            continue
+        if raw.lstrip().startswith("%"):
+            continue
+        line = re.split(r"(?<!\\)%", raw, 1)[0]
+        custom = custom or bool(_RENUMBER_RE.search(line))
+        if cur is None:
+            appendix = appendix or bool(_APPENDIX_RE.search(line))
+            m = _FLOAT_RE.search(line)
+            if not m:
+                continue
+            cur = {"env": m[1], "kind": m[2], "line": no,
+                   "origin": stack[-1] if stack else origin_top, "appendix": appendix}
+            body = [line[m.end():]]
+        else:
+            body.append(line)
+        joined = "\n".join(body)
+        end = joined.find("\\end{" + cur["env"] + "}")
+        if end >= 0:
+            _parse_float(cur, joined[:end], counts)
+            floats.append(cur)
+            cur = None
+    return {"numbering": "custom" if custom else "default", "floats": floats}
+
+
 def _norm_arxiv(v: str) -> str:
     return re.sub(r"^arxiv:|v\d+$", "", (v or "").strip().lower())
 

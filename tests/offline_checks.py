@@ -883,7 +883,42 @@ def check_limitations() -> None:
         fetch.shutil.which, fetch.subprocess.run = ow, orun
 
 
+def check_floats_latex() -> None:
+    tex = (
+        "\\section{Intro}\n"
+        "% [ppread] >>> sec/model.tex\n"
+        "\\begin{figure*}[t]\n\\includegraphics[width=\\linewidth]{figs/arch}\n"
+        "\\caption[Short]{The {Transformer} model.}\\label{fig:arch}\n\\end{figure*}\n"
+        "% [ppread] <<< sec/model.tex\n"
+        "%\\begin{figure}\n%\\caption{Gone}\n%\\end{figure}\n"
+        "\\begin{table}\n\\caption{BLEU scores.} % \\caption{x}\n\\label{tab:bleu}\n"
+        "\\begin{tabular}{ll}a & b\\\\\\end{tabular}\n\\end{table}\n"
+        "\\begin{figure}\n\\begin{minipage}{.5\\linewidth}\\includegraphics{a.png}"
+        "\\caption{Left.}\\end{minipage}\n"
+        "\\begin{minipage}{.5\\linewidth}\\begin{subfigure}{1\\linewidth}"
+        "\\includegraphics{b.png}\\caption{sub}\\end{subfigure}"
+        "\\caption{Right.}\\label{fig:r}\\end{minipage}\n\\end{figure}\n"
+        "\\appendix\n\\begin{table}\\caption{Extra.}\\end{table}\n")
+    r = fetch.latex_floats(tex, "main.tex")
+    assert r["numbering"] == "default"
+    fl = r["floats"]
+    assert [f["env"] for f in fl] == ["figure*", "table", "figure", "table"], fl
+    assert fl[0]["origin"] == "sec/model.tex" and fl[0]["line"] == 3
+    assert fl[0]["graphics"] == [{"path": "figs/arch"}]
+    assert fl[0]["captions"] == [{"ordinal": 1, "label": "fig:arch",
+                                  "caption": "The {Transformer} model."}]
+    assert fl[1]["captions"] == [{"ordinal": 1, "label": "tab:bleu", "caption": "BLEU scores."}]
+    assert [c["caption"] for c in fl[2]["captions"]] == ["Left.", "Right."]
+    assert [c["ordinal"] for c in fl[2]["captions"]] == [2, 3]
+    assert fl[2]["captions"][1]["label"] == "fig:r"
+    assert [g["path"] for g in fl[2]["graphics"]] == ["a.png", "b.png"]
+    assert [f["appendix"] for f in fl] == [False, False, False, True]
+    assert fl[3]["captions"][0]["ordinal"] == 2 and fl[3]["origin"] == "main.tex"
+    assert fetch.latex_floats("\\renewcommand\\thetable{A\\arabic{table}}\n")["numbering"] == "custom"
+
+
 CHECKS = [
+    check_floats_latex,
     check_assemble,
     check_limitations,
     check_finish,
