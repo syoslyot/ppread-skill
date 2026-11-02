@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** (A) 導讀 `primer.md` lets the reader understand every figure and every table of the paper, beside the prerequisites, Abstract, Introduction and Conclusion. (B) A `--quiz` mode that questions the reader one question at a time and grades each answer against the paper, plus `--check` for the reader's own notes, both recorded in `quiz.md`. (C) 精讀 tells an evidence gap from a reasoning gap; 通讀's further reading says what kind of evidence each paper adds.
+**Goal:** (A) 導讀 `primer.md` lets the reader understand every figure and every table of the paper, beside the prerequisites, Abstract, Introduction and Conclusion. (B) A `--quiz` mode that questions the reader one question at a time and grades each answer against the paper, recorded in `quiz.md`. (C) 精讀 tells an evidence gap from a reasoning gap; 通讀's further reading says what kind of evidence each paper adds.
 
 **Architecture:** (A) `fetch.py` gains `--floats WORKDIR`, a deterministic inventory of every figure and table (from `source.tex`, else a caption scan of `source.md` or the PDF) that also puts a viewable PNG of every figure into `assets/<slug>/`. `lecture-format.md` replaces〈方法速覽〉with〈圖表導覽〉, one unit per numbered caption. `SKILL.md` plans the primer from the inventory and writes the new section in bounded passes. (B) No `fetch.py` change: the quiz contract goes into `questions.md` (what to ask and how to answer is that file's concern), the workflow into `SKILL.md`; a test pins that `quiz.md` is never mistaken for a lecture. (C) Two columns in `lecture-format.md`.
 
@@ -61,20 +61,19 @@ Appendix floats use a short form: caption + 中文翻譯 + embed/transcription +
 
 ## Design B — quiz mode
 
-**Why.** Every lecture today is one-way: the reader reads, and each question's reference answer sits one click away, so nothing forces recall. Being made to retrieve an answer is remembered markedly better a week later than rereading the same material (the testing effect; Roediger & Karpicke 2006, "Test-Enhanced Learning", *Psychological Science* — the claim stays out of every lecture unless `--verify` confirms the title). `--check` serves the Zettelkasten boundary instead of crossing it: it never writes the reader's note, it only checks the one the reader wrote. Slides 深讀 already checks a student's notes (`slides-format.md:68-77`), so the separation rule exists.
+**Why.** Every lecture today is one-way: the reader reads, and each question's reference answer sits one click away, so nothing forces recall. Being made to retrieve an answer is remembered markedly better a week later than rereading the same material (the testing effect; Roediger & Karpicke 2006, "Test-Enhanced Learning", *Psychological Science* — the claim stays out of every lecture unless `--verify` confirms the title).
 
 **Invocation.**
 
 | Command | Does |
 |---|---|
 | `/ppread --quiz <source>` | Questions the reader on what the finished lectures covered, one question per message, grades each answer |
-| `/ppread --check <note path> <source>` | Checks every claim in the reader's own note against the source |
 
-Both work on papers and slides. Both flags are stripped before `fetch.py`, which runs as Step 0 only to locate the folder and its `docs`; no lecture is fetched-for or written.
+It works on papers and slides. The flag is stripped before `fetch.py`, which runs as Step 0 only to locate the folder and its `docs`; no lecture is fetched-for or written.
 
 **Gate.** At least one lecture in `docs` must be finished (state not `absent` and not `partial`). Otherwise stop with one line: the quiz asks about what a lecture taught, run `/ppread <source>` first. That is a stop, not a question.
 
-**The no-questions principle is restated, not dropped.** `SKILL.md:20` becomes: writing a lecture never stops to ask a choice it can make itself; `--quiz` and `--check` are conversations the reader started, and their questions are the content, not choices. The fetch-failure questions are unchanged.
+**The no-questions principle is restated, not dropped.** `SKILL.md:20` becomes: writing a lecture never stops to ask a choice it can make itself; `--quiz` is a conversation the reader started, and its questions are the content, not choices. The fetch-failure questions are unchanged.
 
 **Scope.** Questions come only from what the finished lectures cover — primer: Abstract, Introduction, Conclusion, prerequisites, every figure and table; broad: every section, the author-stated limitations, the context; deep: also the argument chain, claims versus evidence, design decisions. Slides by their own modes. Never reuse a lecture's printed `[!question]` verbatim: its answer is visible in the same file.
 
@@ -87,8 +86,6 @@ Both work on papers and slides. Both flags are stripped before `fetch.py`, which
 5. Grading: the expected answer is split into 2–3 key points; each gets `正確`／`部分正確`／`錯誤`／`遺漏`. Every point that is not `正確` quotes the source verbatim (`> ` original, then 中文翻譯) with its location (`§3.2`, `Table 2`, slide 12 / PDF p.14). A claim in the answer that the source never addresses is `論文未說明`, not `錯誤`.
 6. At most one follow-up question per question, aimed at the missed point; then the next question.
 7. After every graded answer, append it to `quiz.md` before asking the next question, so an interrupted session loses at most the question in progress.
-
-**`--check`.** Read the note; never edit it, move it, or write beside it. Split it into claims (one per sentence or bullet). Each claim gets `正確`／`誤讀`／`數字錯誤`／`作者未說`／`個人觀點（不查證）`; every non-`正確` quotes the source with its location. Describe what is wrong; never offer a replacement sentence — the note must stay in the reader's own words. Report the table in the conversation and append it to `quiz.md`; every `誤讀` and `數字錯誤` becomes an open point.
 
 **`quiz.md`** in the paper or chapter folder:
 
@@ -125,7 +122,7 @@ open_points: 1
 
 - Identity keys copied from the lecture's front matter (`title`, `arxiv`, `doi`; slides also `course`). **No `mode` key and never `type: reading`**: that keeps `is_lecture()` false, keeps it out of `papers.base` (which filters `type == "reading"`), and keeps the folder checks ignoring it — the same way they ignore the reader's own `notes.md`. The template is the planner's call; field names are fixed by this section.
 - An open point answered `正確` in a later session is ticked `- [x]` and stays; `open_points` counts the unticked ones.
-- `questions.md`〈邊界〉is amended: answers given inside `--quiz`/`--check` are recorded **verbatim** in `quiz.md` only — never edited, summarised or turned into notes; everywhere else the existing rule holds.
+- `questions.md`〈邊界〉is amended: answers given inside `--quiz` are recorded **verbatim** in `quiz.md` only — never edited, summarised or turned into notes; everywhere else the existing rule holds.
 - Non-goals: no `quiz` column in `--list`, no change to `papers.base` (it is written once and never overwritten; an Obsidian view on `type == "quiz"` is the reader's to add), no spaced-repetition schedule.
 
 ## Design C — gap types and evidence kinds
@@ -161,8 +158,7 @@ Part B (no executable code beyond the pin test; the rest is enforced by contract
 6. **`quiz.md` whose `title` differs from the lecture's** (a typo, a renamed paper) must not trigger `route: conflict`, change `library_row`'s title, or appear in `lecture_docs`. Pinned in Task 5 (`check_quiz_log_is_not_a_lecture`).
 7. **The reader answers "不知道"** or leaves the question blank: every key point is `遺漏`, each quoted with its source, and the point enters〈待加強〉— never a hint followed by the same question again.
 8. **The reader's answer contains a true statement the paper never makes**: graded `論文未說明`, not `錯誤`, and not added to〈待加強〉.
-9. **`--check` on a note that paraphrases correctly in different words**: `正確` — the check compares meaning, not wording, and never suggests a rewording.
-10. **`--quiz` on a folder whose only lecture is `partial`**: the gate stops; it does not quiz from a half-written lecture.
+9. **`--quiz` on a folder whose only lecture is `partial`**: the gate stops; it does not quiz from a half-written lecture.
 
 ---
 
@@ -282,7 +278,7 @@ def check_floats_assets() -> None:
     assert fetch.floats(Path(tempfile.mkdtemp()))["route"] == "floats-unavailable"
 ```
 
-(`pdftoppm -singlefile` writes `<out-stem>.png`, so the stub writes `cmd[-1] + ".png"`; the `gs` branch passes `-o <out>` and is exercised in the live check of Task 5.)
+(`pdftoppm -singlefile` writes `<out-stem>.png`, so the stub writes `cmd[-1] + ".png"`; the `gs` branch passes `-o <out>` and is exercised in the live check of Task 8.)
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -395,11 +391,11 @@ git commit   # subject: docs(format): primer explains every figure and table
 ### Task 5: Quiz contract in `questions.md`
 
 **Files:**
-- Modify: `questions.md` (new top-level `# 拷問與筆記檢查` part after the paper parts, before `# 簡報`; `〈邊界〉` at `:110-115`)
+- Modify: `questions.md` (new top-level `# 拷問` part after the paper parts, before `# 簡報`; `〈邊界〉` at `:110-115`)
 - Test: `tests/offline_checks.py` (new `check_quiz_log_is_not_a_lecture`, added to `CHECKS`)
 
 **Interfaces:**
-- Produces: the `quiz.md` format and the grading values of Design B, which Task 6's `SKILL.md` steps cite by section name (`拷問`, `筆記檢查`, `紀錄檔 quiz.md`).
+- Produces: the `quiz.md` format and the grading values of Design B, which Task 6's `SKILL.md` steps cite by section name (`拷問`, `紀錄檔 quiz.md`).
 
 - [ ] **Step 1: Write the pin test** `check_quiz_log_is_not_a_lecture`:
 
@@ -425,46 +421,46 @@ Expected: every line `ok`, including `ok  check_quiz_log_is_not_a_lecture`. This
 
 - [ ] **Step 3: Write the `questions.md` quiz part**
 
-Sections, each to Design B: `## 拷問`（gate、scope、session steps 1–7、four question types with one example each taken from 1706.03762 and its location）、`## 筆記檢查`（claim split、five verdicts、no replacement sentence）、`## 紀錄檔 quiz.md`（the template, the front-matter rules and why `mode` and `type: reading` are forbidden, ticking rule）. 〈邊界〉gains the verbatim-in-`quiz.md` exception, worded so that everything outside `--quiz`/`--check` is unchanged.
+Sections, each to Design B: `## 拷問`（gate、scope、session steps 1–7、four question types with one example each taken from 1706.03762 and its location）、`## 紀錄檔 quiz.md`（the template, the front-matter rules and why `mode` and `type: reading` are forbidden, ticking rule）. 〈邊界〉gains the verbatim-in-`quiz.md` exception, worded so that everything outside `--quiz` is unchanged.
 
-- [ ] **Step 4: Verify the wording covers Review Focus 7–10**
+- [ ] **Step 4: Verify the wording covers Review Focus 7–9**
 
-Run: `grep -n '不知道\|論文未說明\|不提供改寫\|partial' questions.md`
-Expected: each of Review Focus 7–10 has a sentence in the new part (blank answer → all `遺漏`; true-but-unstated → `論文未說明`, not an open point; paraphrase → `正確`, no rewording; `partial` → gate stops).
+Run: `grep -n '不知道\|論文未說明\|partial' questions.md`
+Expected: each of Review Focus 7–9 has a sentence in the new part (blank answer → all `遺漏`; true-but-unstated → `論文未說明`, not an open point; `partial` → gate stops).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add questions.md tests/offline_checks.py
-git commit   # subject: docs(questions): quiz and note-check contract
+git commit   # subject: docs(questions): quiz contract
 ```
 
 ### Task 6: Quiz workflow in `SKILL.md`
 
 **Files:**
-- Modify: `SKILL.md:3` (description), `:20-21` (the no-questions principle), `:30-50` (Invocation table and flag stripping), new `## Quiz and note check` section after Step 4 (before「Listing」)
+- Modify: `SKILL.md:3` (description), `:20-21` (the no-questions principle), `:30-50` (Invocation table and flag stripping), new `## Quiz` section after Step 4 (before「Listing」)
 
 **Interfaces:**
-- Consumes: `questions.md`〈拷問〉〈筆記檢查〉〈紀錄檔 quiz.md〉from Task 5; Step 0's `fetch.py` JSON (`workdir`, `docs`).
+- Consumes: `questions.md`〈拷問〉〈紀錄檔 quiz.md〉from Task 5; Step 0's `fetch.py` JSON (`workdir`, `docs`).
 
 - [ ] **Step 1: Edit the principle and the invocation**
 
-`:20` to Design B's restatement. Invocation table gains the two rows of Design B. The strip list becomes `--primer`/`--broad`/`--deep`/`--research`/`--quiz`/`--check <note>`; `--check` takes the next argument as the note path, and the path is never passed to `fetch.py`.
+`:20` to Design B's restatement. Invocation table gains the row of Design B. The strip list becomes `--primer`/`--broad`/`--deep`/`--research`/`--quiz`.
 
-- [ ] **Step 2: Write `## Quiz and note check`**
+- [ ] **Step 2: Write `## Quiz`**
 
-Steps: (1) Step 0 only — on any non-success route handle it as Step 0 says; on success apply the gate to `docs`. (2) Read every finished lecture and, if present, `quiz.md`; the source file (`source_path`, `.<mode>.parts/source.md`, or the PDF) is where quotes come from — never quote a lecture as if it were the paper. (3) Run the session or the check exactly as `questions.md` says. (4) Create `quiz.md` on the first graded answer, not before (an abandoned quiz leaves nothing). Description (`:3`): add「--quiz questions the reader one question at a time on what the finished lectures cover and grades each answer against the source; --check checks the reader's own note claim by claim without rewriting it; both keep a verbatim log in quiz.md」; replace「Never stops to ask a choice it can make itself」with「Writing a lecture never stops to ask a choice it can make itself」.
+Steps: (1) Step 0 only — on any non-success route handle it as Step 0 says; on success apply the gate to `docs`. (2) Read every finished lecture and, if present, `quiz.md`; the source file (`source_path`, `.<mode>.parts/source.md`, or the PDF) is where quotes come from — never quote a lecture as if it were the paper. (3) Run the session exactly as `questions.md` says. (4) Create `quiz.md` on the first graded answer, not before (an abandoned quiz leaves nothing). Description (`:3`): add「--quiz questions the reader one question at a time on what the finished lectures cover and grades each answer against the source, keeping a verbatim log in quiz.md」; replace「Never stops to ask a choice it can make itself」with「Writing a lecture never stops to ask a choice it can make itself」.
 
 - [ ] **Step 3: Verify**
 
-Run: `grep -n -- '--quiz\|--check\|quiz.md' SKILL.md`
+Run: `grep -n -- '--quiz\|quiz.md' SKILL.md`
 Expected: hits in the description, the principle, the Invocation table, the strip list and the new section.
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add SKILL.md
-git commit   # subject: docs(skill): add --quiz and --check
+git commit   # subject: docs(skill): add --quiz
 ```
 
 ### Task 7: Gap types in 精讀, evidence kinds in 通讀
@@ -497,12 +493,12 @@ git commit   # subject: docs(format): gap types in deep, evidence kinds in broad
 
 **Files:**
 - Modify: `CLAUDE.md` (What this is: primer sentence and the quiz sentence; Architecture: `fetch.py` list adds `--floats`, `questions.md` line adds the quiz contract; Non-obvious decisions: two new bullets, and the「The skill never asks a choice it can make itself」bullet restated; Testing: list the four new checks and the live case)
-- Modify: `~/computer-science/TOOLS.md` (`/ppread` paper row, a new `/ppread --quiz｜--check` row, the「選工具速查」row; separate repo, commit on its `main` per that repo's CLAUDE.md)
+- Modify: `~/computer-science/TOOLS.md` (`/ppread` paper row, a new `/ppread --quiz` row, the「選工具速查」row; separate repo, commit on its `main` per that repo's CLAUDE.md)
 
 - [ ] **Step 1: Add the CLAUDE.md decision bullets**
 
 Figures: the primer explains every figure and table, so「every」must be checkable — `--floats` inventories numbered captions deterministically (subfigure captions are not numbered; `numbering: custom` defers to printed numbers) and converts PDF/EPS figures to PNG because the agent cannot view them, which was the reason most figure units used to say "could not be viewed"; caption scan is the lower-fidelity fallback and says so in `inventory`.
-Quiz: lectures are one-way and their answers sit one click away; `--quiz` makes the reader retrieve, `--check` checks the reader's own note without writing it, which serves the Zettelkasten boundary; `quiz.md` has no `mode` and is not `type: reading`, so it is invisible to every lecture check; answers are logged verbatim, never turned into notes; the topic-level research mode is deferred to issue #37, to be designed with the Obsidian paper map.
+Quiz: lectures are one-way and their answers sit one click away; `--quiz` makes the reader retrieve; `quiz.md` has no `mode` and is not `type: reading`, so it is invisible to every lecture check; answers are logged verbatim, never turned into notes; the topic-level research mode is deferred to issue #37, to be designed with the Obsidian paper map.
 
 - [ ] **Step 2: Live check**
 
