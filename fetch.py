@@ -1094,31 +1094,35 @@ def floats(workdir: Path) -> dict:
                 if why:
                     g["reason"] = why
         return {"route": "floats", "inventory": "latex", "source": str(st), **r}
-    for md in sorted(workdir.glob(".*.parts/source.md")):
-        return {"route": "floats", "inventory": "caption-scan", "source": str(md),
-                "floats": _caption_scan(md.read_text("utf-8", errors="replace"))}
-    pdfs = sorted(workdir.glob("*.pdf"))
+    # The PDF before source.md: only the PDF yields page images, and on the PDF
+    # route those are the only way to see a figure. source.md is the fallback.
+    pdfs, failed = sorted(workdir.glob("*.pdf")), ""
     if pdfs and shutil.which("pdftotext"):
         try:
             run = subprocess.run(["pdftotext", "-layout", str(pdfs[0]), "-"],
                                  capture_output=True, text=True, timeout=60)
+            if run.returncode or not run.stdout.strip():
+                failed = (f"pdftotext gave no text from {pdfs[0].name} "
+                          "(corrupt, encrypted or scanned PDF)")
         except Exception as e:
-            return {"route": "floats-unavailable", "reason": f"pdftotext failed: {e}"}
-        if run.returncode or not run.stdout.strip():
-            return {"route": "floats-unavailable",
-                    "reason": f"pdftotext gave no text from {pdfs[0].name} "
-                              "(corrupt, encrypted or scanned PDF)"}
-        found, pages = _caption_scan(run.stdout), {}
-        for e in found:
-            p = e["page"]
-            if p not in pages:
-                pages[p] = _asset(pdfs[0], dest, f"page-{p}.png", page=p, dpi=110)
-            got, why = pages[p]
-            e["asset"] = prefix + got if got else None
-            if why:
-                e["reason"] = why
-        return {"route": "floats", "inventory": "caption-scan", "source": str(pdfs[0]),
-                "floats": found}
+            failed = f"pdftotext failed: {e}"
+        if not failed:
+            found, pages = _caption_scan(run.stdout), {}
+            for e in found:
+                p = e["page"]
+                if p not in pages:
+                    pages[p] = _asset(pdfs[0], dest, f"page-{p}.png", page=p, dpi=110)
+                got, why = pages[p]
+                e["asset"] = prefix + got if got else None
+                if why:
+                    e["reason"] = why
+            return {"route": "floats", "inventory": "caption-scan",
+                    "source": str(pdfs[0]), "floats": found}
+    for md in sorted(workdir.glob(".*.parts/source.md")):
+        return {"route": "floats", "inventory": "caption-scan", "source": str(md),
+                "floats": _caption_scan(md.read_text("utf-8", errors="replace"))}
+    if failed:
+        return {"route": "floats-unavailable", "reason": failed}
     return {"route": "floats-unavailable",
             "reason": "no source.tex, no source.md, and no PDF readable with pdftotext"}
 

@@ -972,6 +972,18 @@ def check_floats_caption_scan() -> None:
     m = fetch.floats(w)
     assert m["inventory"] == "caption-scan" and m["floats"][0]["number"] == "1"
     assert "page" not in m["floats"][0] and "asset" not in m["floats"][0]
+    (w / "paper.pdf").write_bytes(b"%PDF")
+    ow, orun = fetch.shutil.which, fetch.subprocess.run
+    fetch.shutil.which = lambda n: "/usr/bin/pdftotext" if n == "pdftotext" else None
+    fetch.subprocess.run = lambda *a, **k: type(
+        "R", (), {"returncode": 0, "stdout": "x\n\fTable 1: T.\n", "stderr": ""})()
+    try:
+        m = fetch.floats(w)   # the PDF wins over source.md: only it yields page images
+    finally:
+        fetch.shutil.which, fetch.subprocess.run = ow, orun
+    assert m["source"] == str(w / "paper.pdf"), m
+    assert m["floats"][0]["page"] == 2 and m["floats"][0]["asset"] is None
+    assert m["floats"][0]["reason"] == "pdftoppm not available"
 
 
 def check_commented_input_not_expanded() -> None:
