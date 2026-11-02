@@ -950,7 +950,27 @@ def check_floats_assets() -> None:
     assert fetch.floats(Path(tempfile.mkdtemp()))["route"] == "floats-unavailable"
 
 
+def check_floats_caption_scan() -> None:
+    text = ("Intro text.\nTable 2. shows that we win.\n\fFigure 1: The model\n"
+            "architecture overview.\n\nTable 2: BLEU on WMT.\nFig. 3. Loss curve.\n"
+            "TABLE IV\nCOMPARISON OF METHODS\n")
+    r = fetch._caption_scan(text)
+    assert [(e["kind"], e["number"]) for e in r] == [
+        ("figure", "1"), ("table", "2"), ("figure", "3"), ("table", "IV")], r
+    assert r[0]["caption"] == "Figure 1: The model architecture overview."
+    assert r[0]["page"] == 2 and r[0]["line"] == 3
+    assert r[1]["caption"] == "Table 2: BLEU on WMT." and r[1]["line"] == 6
+    assert r[2]["caption"] == "Fig. 3. Loss curve."
+    assert r[3]["caption"] == "TABLE IV COMPARISON OF METHODS"
+    w = Path(tempfile.mkdtemp()); (w / ".primer.parts").mkdir()
+    (w / ".primer.parts" / "source.md").write_text("Figure 1: A.\n", "utf-8")
+    m = fetch.floats(w)
+    assert m["inventory"] == "caption-scan" and m["floats"][0]["number"] == "1"
+    assert "page" not in m["floats"][0] and "asset" not in m["floats"][0]
+
+
 CHECKS = [
+    check_floats_caption_scan,
     check_floats_assets,
     check_floats_latex,
     check_assemble,

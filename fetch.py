@@ -991,7 +991,8 @@ def latex_floats(text: str, origin_top: str = "") -> dict:
 _GRAPHIC_EXTS = (".png", ".jpg", ".jpeg", ".pdf", ".eps")
 
 
-def _asset(src: Path, dest_dir: Path, name: str) -> tuple[str | None, str | None]:
+def _asset(src: Path, dest_dir: Path, name: str, page: int = 1,
+           dpi: int = 150) -> tuple[str | None, str | None]:
     """Put a viewable PNG/JPG of src at dest_dir/name: copied as is, or converted
     from PDF/EPS, which the agent cannot view. An up-to-date copy is kept."""
     ext = src.suffix.lower()
@@ -1005,7 +1006,7 @@ def _asset(src: Path, dest_dir: Path, name: str) -> tuple[str | None, str | None
     tool = "pdftoppm" if ext == ".pdf" else "gs"
     if not shutil.which(tool):
         return None, f"{tool} not available"
-    cmd = (["pdftoppm", "-png", "-r", "150", "-singlefile", "-f", "1", "-l", "1",
+    cmd = (["pdftoppm", "-png", "-r", str(dpi), "-singlefile", "-f", str(page), "-l", str(page),
             str(src), str(out.with_suffix(""))] if tool == "pdftoppm" else
            ["gs", "-q", "-dSAFER", "-dBATCH", "-dNOPAUSE", "-dEPSCrop",
             "-sDEVICE=png16m", "-r150", "-o", str(out), str(src)])
@@ -1025,6 +1026,39 @@ def _resolve_graphic(src_dir: Path, arg: str) -> Path | None:
         if p.is_file():
             return p
     return None
+
+
+_CAPTION_RE = re.compile(
+    r"^\s*(Figure|FIGURE|Fig\.|Table|TABLE)\s+([A-Z]?\d+|[IVXLC]+)\s*([:.]?)\s*(.*)$")
+
+
+def _caption_scan(text: str) -> list[dict]:
+    """Caption lines in extracted text, one per (kind, number). A colon caption
+    beats a period one, which beats a bare all-caps IEEE label: a body sentence
+    can start a line with "Table 2." but rarely with "Table 2:"."""
+    lines = text.split("\n")   # not splitlines(): it also splits on \f
+    paged = "\f" in text
+    best, page = {}, 1
+    for i, raw in enumerate(lines):
+        page += len(raw) - len(raw.lstrip("\f"))
+        m = _CAPTION_RE.match(raw)
+        if m and (m[3] or m[1] in ("TABLE", "FIGURE")):
+            key = ("table" if m[1].lower().startswith("tab") else "figure", m[2])
+            rank = {":": 0, ".": 1, "": 2}[m[3]]
+            if key not in best or rank < best[key][0]:
+                parts = [raw]
+                for nxt in lines[i + 1:i + 4]:
+                    if not nxt.strip() or _CAPTION_RE.match(nxt):
+                        break
+                    parts.append(nxt)
+                e = {"kind": key[0], "number": key[1],
+                     "caption": " ".join(" ".join(parts).replace("\f", " ").split()),
+                     "line": i + 1}
+                if paged:
+                    e["page"] = page
+                best[key] = (rank, e)
+        page += raw.count("\f") - (len(raw) - len(raw.lstrip("\f")))
+    return sorted((e for _, e in best.values()), key=lambda e: e["line"])
 
 
 def floats(workdir: Path) -> dict:
@@ -1053,8 +1087,33 @@ def floats(workdir: Path) -> dict:
                 if why:
                     g["reason"] = why
         return {"route": "floats", "inventory": "latex", "source": str(st), **r}
+    for md in sorted(workdir.glob(".*.parts/source.md")):
+        return {"route": "floats", "inventory": "caption-scan", "source": str(md),
+                "floats": _caption_scan(md.read_text("utf-8", errors="replace"))}
+    pdfs = sorted(workdir.glob("*.pdf"))
+    if pdfs and shutil.which("pdftotext"):
+        try:
+            run = subprocess.run(["pdftotext", "-layout", str(pdfs[0]), "-"],
+                                 capture_output=True, text=True, timeout=60)
+        except Exception as e:
+            return {"route": "floats-unavailable", "reason": f"pdftotext failed: {e}"}
+        if run.returncode or not run.stdout.strip():
+            return {"route": "floats-unavailable",
+                    "reason": f"pdftotext gave no text from {pdfs[0].name} "
+                              "(corrupt, encrypted or scanned PDF)"}
+        found, pages = _caption_scan(run.stdout), {}
+        for e in found:
+            p = e["page"]
+            if p not in pages:
+                pages[p] = _asset(pdfs[0], dest, f"page-{p}.png", page=p, dpi=110)
+            got, why = pages[p]
+            e["asset"] = prefix + got if got else None
+            if why:
+                e["reason"] = why
+        return {"route": "floats", "inventory": "caption-scan", "source": str(pdfs[0]),
+                "floats": found}
     return {"route": "floats-unavailable",
-            "reason": "no source.tex, no source.md, and no PDF"}
+            "reason": "no source.tex, no source.md, and no PDF readable with pdftotext"}
 
 
 def _norm_arxiv(v: str) -> str:
