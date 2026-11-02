@@ -1,6 +1,6 @@
 ---
 name: ppread
-description: "Bilingual lectures from research papers and course slides — invoke with /ppread [--primer | --broad | --deep | --research] <arXiv ID | DOI | URL | title | PDF path>, or /ppread --list [dir]. Papers have three modes, read in order: --primer writes primer.md (導讀: abstract, introduction and conclusion paragraph by paragraph — English original, Traditional Chinese translation, explanation — every prerequisite the paper assumes, the method as one worked example, and a one-glance table of problem, difficulty, approach, experimental variables and results); --broad writes broad.md (通讀: every section of the paper explained at moderate depth without critique, the limitations the authors state, and its place in the literature from the Semantic Scholar citation graph); --deep writes deep.md (精讀: the whole paper with critical analysis, the argument chain, a claims-versus-evidence table and design decisions). With no flag, the first unfinished mode in primer → broad → deep is written; the long modes are written by parallel section writers. Course slides (a landscape PDF lecture deck, often carrying the student's own annotations): --broad maps the chapter and explains every technical term in both languages; --deep works through each technical unit with filled-in derivations, worked examples and a check of the student's notes; --research links the chapter's topics to foundational and recent papers found through Semantic Scholar search. Every lecture ends with questions and folded reference answers. --list shows every paper's and chapter's lectures and whether each has been read. Never stops to ask a choice it can make itself. Stops at the lecture and never writes the user's own notes."
+description: "Bilingual lectures from research papers and course slides — invoke with /ppread [--primer | --broad | --deep | --research] <arXiv ID | DOI | URL | title | PDF path>, or /ppread --list [dir]. Papers have three modes, read in order: --primer writes primer.md (導讀: abstract, introduction and conclusion paragraph by paragraph — English original, Traditional Chinese translation, explanation — every prerequisite the paper assumes, every figure and table explained so the reader can read it — the method traced once through the figure that depicts it — and a one-glance table of problem, difficulty, approach, experimental variables and results); --broad writes broad.md (通讀: every section of the paper explained at moderate depth without critique, the limitations the authors state, and its place in the literature from the Semantic Scholar citation graph); --deep writes deep.md (精讀: the whole paper with critical analysis, the argument chain, a claims-versus-evidence table and design decisions). With no flag, the first unfinished mode in primer → broad → deep is written; the long modes are written by parallel section writers. Course slides (a landscape PDF lecture deck, often carrying the student's own annotations): --broad maps the chapter and explains every technical term in both languages; --deep works through each technical unit with filled-in derivations, worked examples and a check of the student's notes; --research links the chapter's topics to foundational and recent papers found through Semantic Scholar search. Every lecture ends with questions and folded reference answers. --list shows every paper's and chapter's lectures and whether each has been read. Never stops to ask a choice it can make itself. Stops at the lecture and never writes the user's own notes."
 ---
 
 # /ppread — Lectures from Papers and Course Slides
@@ -10,7 +10,8 @@ through. A paper gets three modes, each written to its own file, in the order a
 reader meets the paper (Keshav's three passes):
 
 - **導讀 primer** (`primer.md`) — enter the paper: what it is about, what was hard,
-  what it does and how it came out, and every prerequisite needed to read it.
+  what it does and how it came out, every prerequisite needed to read it, and
+  every figure and table explained until the reader can read it.
 - **通讀 broad** (`broad.md`) — read the whole paper through: every section
   explained at moderate depth, the limitations the authors state, where it sits
   among other work, what to read next. No critique.
@@ -115,12 +116,13 @@ papers; the rule that actually decides, for every combination of either kind, is
   (abstract, introduction, conclusion, core method) is a finished lecture like any
   other; it is not rewritten.
 - **`partial`**: always resume — never ask.
-  - `<workdir>/.<mode>.parts/` exists → resume the orchestrated run (Step 3,
-    "Resume").
-  - Only `<mode>.part.md` exists (導讀, slides, or an older interruption) →
-    delete everything from the file's last `##` heading onward and rewrite that
-    section, then continue — sections are written one per pass, so only the last
-    can be incomplete.
+  - Broad or deep, and `<workdir>/.<mode>.parts/` exists → resume the
+    orchestrated run (Step 3, "Resume").
+  - Otherwise (導讀, slides, or an older interruption) → delete everything from
+    the file's last `##` heading onward and rewrite that section, then continue —
+    sections are written one per pass, so only the last can be incomplete. Inside
+   〈圖表導覽〉the pass is a batch of units, so cut from the last `###` unit heading
+    instead. A `.primer.parts/` holds only `source.md`; it is not a parts plan.
   - Restart only when the user explicitly asks: delete `<mode>.part.md` and
     `.<mode>.parts/`, then begin at Step 1.
 - **`legacy: true`**: a `lecture.md` from ppread 0.1 is in the folder. It does not
@@ -252,8 +254,20 @@ block and **carry on without waiting** — it informs; it does not ask:
 
 - Which paragraphs go under〈論文全貌〉(Abstract, Introduction, Conclusion — name
   the section numbers)
-- Which passage, figure and formula〈方法速覽〉builds its one worked example from
-- The list for〈讀懂它需要先知道的〉, each with a one-line depth limit
+- The〈圖表導覽〉units: run `python3 ~/.claude/skills/ppread/fetch.py --floats
+  <workdir>` (on `needs-html` first save the converted text as
+  `<workdir>/.primer.parts/source.md`; on `needs-pdf` keep the downloaded PDF in
+  `<workdir>`). List every numbered caption it returns, in its order, as one
+  planned unit; state `inventory`, `numbering`, which units are appendix, and every
+  `asset: null` with its `reason`. `floats-unavailable` → say so; the units are
+  then planned from the captions you read, and the status line says the list
+  could not be checked
+- Which figure carries the method's one worked trace (the figure of the mechanism
+  the abstract's central claim depends on), or, with no such figure, which
+  Introduction paragraph does
+- The list for〈讀懂它需要先知道的〉, each with a one-line depth limit — covering
+  every term the figures and tables need (metrics, axis quantities, units, header
+  abbreviations), not only the text's
 - Where each of the five〈一頁看懂〉rows comes from (section, table or figure)
 
 **Broad and deep**:
@@ -284,7 +298,9 @@ rate-limit refusals, and a resumed run repeats no call.
   keyed `graph`, `verify` (a list of results) and `limitations`. If `context.json`
   already exists (a resumed run), read it and make no call it already answers.
 
-**Primer** has no work directory; keep the results in the conversation.
+**Primer** keeps its results in the conversation. Its only file besides the
+lecture is `<workdir>/.primer.parts/source.md` on `needs-html` (Step 1), which
+`--floats` and `--limitations` read and `--finish` removes.
 
 ### The citation graph (broad)
 
@@ -358,8 +374,11 @@ no such lecture, the lecture writes its own.
   `lecture_read: false`), then **one `##` section per pass**, appending, in the
   skeleton's order. Never emit the whole lecture in one response — quality
   collapses near the end. After each section, state what was done and continue.
-- Paragraph-unit 解說 point back to〈讀懂它需要先知道的〉, never re-explain it.
-  Then Step 4.
+- 〈圖表導覽〉is written in passes of **at most 4 units**, appended, in `--floats`
+  order. Each table is transcribed from the source (`source.tex`, else the text
+  `--floats` scanned); each figure embeds `asset` exactly as returned.
+- Paragraph-unit and figure-unit 解說 point back to〈讀懂它需要先知道的〉, never
+  re-explain it. Then Step 4.
 
 ### 通讀 and 精讀 — orchestrator and parallel writers
 
@@ -374,7 +393,9 @@ hidden from `--list` and the folder checks; part numbers are two digits, 01–99
    `lecture-format.md` parts to read; the terms it owns (explain fully); the terms
    owned elsewhere, with where (link, never re-explain); its unit budget under
    `lecture-format.md`'s 通讀 caps; the verified outside papers it may cite,
-   copied from `context.json` (nothing else); the figure paths for its sections;
+   copied from `context.json` (nothing else); the `--floats` units for its sections
+   (caption, `asset`), and — when `primer.md` is finished and has〈圖表導覽〉— the
+   primer unit heading each one links to instead of re-explaining it;
    its output name `NN-<slug>.md`. Only when every brief is
    written, rename them all to `brief-NN.md` — that set of renames marks the plan
    complete, and `--assemble` counts only `brief-NN.md`.
@@ -533,8 +554,11 @@ mechanism）` — then the English alone afterwards.
 **Cite by name, not number.** On the LaTeX route `\citep{vaswani2017}` tells you
 exactly who is being cited — resolve it from the bibliography and name the work.
 
-**Figures**: `fetch.py` lists `figures` and `figures_dir`. When a passage turns on
-a figure, look at it — Read the file directly if it is `.png`/`.jpg`, then copy it
-to `assets/<slug>/` and embed with `![[...]]`. For `.pdf`/`.eps` figures, say
-plainly that the figure could not be viewed and explain from the caption and
-surrounding text instead.
+**Figures**: `fetch.py --floats <workdir>` lists every figure and table and puts a
+viewable PNG of each figure in `assets/<slug>/` beside the paper folder — `.pdf`
+and `.eps` figures are converted, and on the PDF route each page holding a caption
+is rendered. Look at every figure you explain (Read the `asset` path, relative to
+the library) and embed it with `![[<asset>]]` exactly as returned. `asset: null`
+means the figure could not be viewed (`reason` says why): say so plainly and
+explain from the caption and surrounding text instead — never describe a figure
+you have not seen.
