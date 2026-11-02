@@ -1,6 +1,6 @@
 ---
 name: ppread
-description: "Bilingual lectures from research papers and course slides — invoke with /ppread [--primer | --broad | --deep | --research] <arXiv ID | DOI | URL | title | PDF path>, or /ppread --list [dir]. Papers have three modes, read in order: --primer writes primer.md (導讀: abstract, introduction and conclusion paragraph by paragraph — English original, Traditional Chinese translation, explanation — every prerequisite the paper assumes, every figure and table explained so the reader can read it — the method traced once through the figure that depicts it — and a one-glance table of problem, difficulty, approach, experimental variables and results); --broad writes broad.md (通讀: every section of the paper explained at moderate depth without critique, the limitations the authors state, and its place in the literature from the Semantic Scholar citation graph); --deep writes deep.md (精讀: the whole paper with critical analysis, the argument chain, a claims-versus-evidence table and design decisions). With no flag, the first unfinished mode in primer → broad → deep is written; the long modes are written by parallel section writers. Course slides (a landscape PDF lecture deck, often carrying the student's own annotations): --broad maps the chapter and explains every technical term in both languages; --deep works through each technical unit with filled-in derivations, worked examples and a check of the student's notes; --research links the chapter's topics to foundational and recent papers found through Semantic Scholar search. Every lecture ends with questions and folded reference answers. --list shows every paper's and chapter's lectures and whether each has been read. Never stops to ask a choice it can make itself. Stops at the lecture and never writes the user's own notes."
+description: "Bilingual lectures from research papers and course slides — invoke with /ppread [--primer | --broad | --deep | --research | --quiz] <arXiv ID | DOI | URL | title | PDF path>, or /ppread --list [dir]. Papers have three modes, read in order: --primer writes primer.md (導讀: abstract, introduction and conclusion paragraph by paragraph — English original, Traditional Chinese translation, explanation — every prerequisite the paper assumes, every figure and table explained so the reader can read it — the method traced once through the figure that depicts it — and a one-glance table of problem, difficulty, approach, experimental variables and results); --broad writes broad.md (通讀: every section of the paper explained at moderate depth without critique, the limitations the authors state, and its place in the literature from the Semantic Scholar citation graph); --deep writes deep.md (精讀: the whole paper with critical analysis, the argument chain, a claims-versus-evidence table and design decisions). With no flag, the first unfinished mode in primer → broad → deep is written; the long modes are written by parallel section writers. Course slides (a landscape PDF lecture deck, often carrying the student's own annotations): --broad maps the chapter and explains every technical term in both languages; --deep works through each technical unit with filled-in derivations, worked examples and a check of the student's notes; --research links the chapter's topics to foundational and recent papers found through Semantic Scholar search. Every lecture ends with questions and folded reference answers. --quiz questions the reader one question at a time on what the finished lectures cover and grades each answer against the source, keeping a verbatim log in quiz.md. --list shows every paper's and chapter's lectures and whether each has been read. Writing a lecture never stops to ask a choice it can make itself. Stops at the lecture and never writes the user's own notes."
 ---
 
 # /ppread — Lectures from Papers and Course Slides
@@ -18,8 +18,10 @@ reader meets the paper (Keshav's three passes):
 - **精讀 deep** (`deep.md`) — judge the paper: does the argument hold, why was each
   design decision made, does the evidence carry the claims.
 
-The skill never stops to ask a choice it can make itself. It asks only when a
-fetch fails in a way no default can fix (see Step 0's routes).
+Writing a lecture never stops to ask a choice it can make itself. It asks only
+when a fetch fails in a way no default can fix (see Step 0's routes). `--quiz` is
+the one exception by design: it is a conversation the reader started, and its
+questions are the content, not choices (see "Quiz").
 
 A local PDF can also be a **course slide deck**. Slides get three lectures —
 broad, deep and research — and their own workflow in `slides.md`; Step 0 below
@@ -37,13 +39,14 @@ translating, explaining and questioning are judgment and live here.
 | `/ppread --broad <source>` | 通讀 the whole paper (slides: 廣讀) |
 | `/ppread --deep <source>` | 精讀 (slides: 深讀) |
 | `/ppread --research <slides PDF>` | Research lecture — slides only |
+| `/ppread --quiz <source>` | Questions the reader one question at a time on what the finished lectures cover and grades each answer against the source — see "Quiz" |
 | `/ppread --list [dir]` | Lists papers and lecture state — see "Listing" |
 
 `<source>` may be an arXiv ID or URL, a DOI, a publisher URL, a paper title, or a
 local PDF path. The mode is a flag, never a bare word: a title such as
 `deep residual learning for image recognition` would otherwise lose its first word
 to the mode and resolve to the wrong paper. Strip
-`--primer`/`--broad`/`--deep`/`--research` before passing the source to
+`--primer`/`--broad`/`--deep`/`--research`/`--quiz` before passing the source to
 `fetch.py`; `fetch.py` does not accept them.
 `--research` exists only for slides: on a paper, say that a paper's broad lecture
 already places it in the literature, and stop. `--primer` exists only for papers:
@@ -474,6 +477,31 @@ The reference answers do not cross this line: they are comparison material, fold
 so the user meets them only after answering, and marked `generated: claude` like the
 rest of the file. If the user pastes their answers into the conversation, discuss
 the gap — but do not turn their answers into notes or write them to any file.
+
+## Quiz
+
+`/ppread --quiz <source>`, for papers and slides alike. Read `questions.md`〈拷問〉
+and〈紀錄檔 quiz.md〉first and follow them literally.
+
+1. **Step 0 only.** A local file whose own folder holds no `primer.md`,
+   `broad.md`, `deep.md` or `research.md` has no lecture yet: stop with the gate
+   line *before* fetching — the fetch would adopt the file and move it into a new
+   folder, a side effect nobody asked a quiz to have. Otherwise run the fetch as Step 0 says and handle any non-success route
+   the way its table says. Skip "Choosing the mode", and do not switch to
+   `slides.md`: the quiz writes no lecture. On success, apply the gate to `docs` —
+   at least one mode neither `absent` nor `partial`, else stop with one line.
+2. **Read before asking.** Read every finished lecture (the scope) and `quiz.md` if
+   it exists (open points first, questions already asked never repeated). Quotes
+   come from the source — `source_path`, `.<mode>.parts/source.md`, the slide
+   deck or the paper PDF — never from a lecture, which is a translation and an
+   explanation, not the paper.
+3. **Run the session** exactly as〈拷問〉says: one question per message, no hint
+   before the answer, grade point by point, at most one follow-up.
+4. **Write as you go.** Create `quiz.md` on the first graded answer, not before (an
+   abandoned quiz leaves nothing); append each graded question before asking the
+   next, and update its front matter on every write.
+5. **End** when the reader says「停」/「stop」or the default five are done: one
+   line with how many points went to〈待加強〉and the path to `quiz.md`.
 
 ## Listing
 
