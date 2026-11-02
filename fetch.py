@@ -881,7 +881,10 @@ def limitations(workdir: Path) -> dict:
 
 _FLOAT_RE = re.compile(r"\\begin\{((?:wrap|sideways)?(figure|table)\*?)\}")
 _FLOAT_TOKEN_RE = re.compile(r"\\(includegraphics|caption|label|begin|end)\b\*?")
-_APPENDIX_RE = re.compile(r"\\appendix\b|\\begin\{appendix|\\begin\{appendices\}")
+# Back matter counts too: many papers put appendix floats after the bibliography
+# under \section* without ever writing \appendix (1706.03762's Figures 3-5).
+_APPENDIX_RE = re.compile(r"\\appendix\b|\\begin\{appendi(?:x|ces)\}"
+                          r"|\\end\{thebibliography\}|\\bibliography\{")
 _RENUMBER_RE = re.compile(r"\\renewcommand\s*\{?\s*\\the(?:figure|table)\b")
 
 

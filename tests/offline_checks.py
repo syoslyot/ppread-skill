@@ -915,6 +915,11 @@ def check_floats_latex() -> None:
     assert [f["appendix"] for f in fl] == [False, False, False, True]
     assert fl[3]["captions"][0]["ordinal"] == 2 and fl[3]["origin"] == "main.tex"
     assert fetch.latex_floats("\\renewcommand\\thetable{A\\arabic{table}}\n")["numbering"] == "custom"
+    back = fetch.latex_floats("\\end{thebibliography}\n\\begin{figure}\\caption{V.}\\end{figure}\n"
+                              "\\begin{figure}\\caption{W.}\\end{figure}\n")["floats"]
+    assert [f["appendix"] for f in back] == [True, True], back
+    assert fetch.latex_floats("\\bibliography{refs}\n\\begin{table}\\caption{T.}\\end{table}\n"
+                              )["floats"][0]["appendix"] is True
 
 
 def check_floats_assets() -> None:
