@@ -988,6 +988,75 @@ def latex_floats(text: str, origin_top: str = "") -> dict:
     return {"numbering": "custom" if custom else "default", "floats": floats}
 
 
+_GRAPHIC_EXTS = (".png", ".jpg", ".jpeg", ".pdf", ".eps")
+
+
+def _asset(src: Path, dest_dir: Path, name: str) -> tuple[str | None, str | None]:
+    """Put a viewable PNG/JPG of src at dest_dir/name: copied as is, or converted
+    from PDF/EPS, which the agent cannot view. An up-to-date copy is kept."""
+    ext = src.suffix.lower()
+    out = dest_dir / name
+    if out.is_file() and out.stat().st_mtime >= src.stat().st_mtime:
+        return name, None
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    if ext in (".png", ".jpg", ".jpeg"):
+        shutil.copy2(src, out)
+        return name, None
+    tool = "pdftoppm" if ext == ".pdf" else "gs"
+    if not shutil.which(tool):
+        return None, f"{tool} not available"
+    cmd = (["pdftoppm", "-png", "-r", "150", "-singlefile", "-f", "1", "-l", "1",
+            str(src), str(out.with_suffix(""))] if tool == "pdftoppm" else
+           ["gs", "-q", "-dSAFER", "-dBATCH", "-dNOPAUSE", "-dEPSCrop",
+            "-sDEVICE=png16m", "-r150", "-o", str(out), str(src)])
+    try:
+        run = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except Exception as e:
+        return None, f"conversion failed: {e}"
+    if run.returncode or not out.is_file():
+        err = (run.stderr or "").strip().splitlines()
+        return None, f"conversion failed: {err[0] if err else f'exit {run.returncode}'}"
+    return name, None
+
+
+def _resolve_graphic(src_dir: Path, arg: str) -> Path | None:
+    for cand in [arg] + [arg + e for e in _GRAPHIC_EXTS]:
+        p = src_dir / cand
+        if p.is_file():
+            return p
+    return None
+
+
+def floats(workdir: Path) -> dict:
+    """Every figure and table with a viewable image of each figure placed in
+    <workdir.parent>/assets/<workdir.name>/, from the best source on disk."""
+    st = workdir / "source.tex"
+    dest = workdir.parent / "assets" / workdir.name
+    prefix = f"assets/{workdir.name}/"
+    if st.is_file():
+        src_dir = workdir / "src"
+        main = find_main_tex(src_dir) if src_dir.is_dir() else None
+        top = main.relative_to(src_dir).as_posix() if main else ""
+        r = latex_floats(st.read_text("utf-8", errors="replace"), top)
+        for f in r["floats"]:
+            for g in f["graphics"]:
+                p = _resolve_graphic(src_dir, g["path"])
+                if p is None:
+                    g |= {"asset": None, "reason": "not found in src/"}
+                    continue
+                rel = p.relative_to(src_dir).as_posix()
+                name = rel.replace("/", "-")
+                if p.suffix.lower() in (".pdf", ".eps"):
+                    name = name.rsplit(".", 1)[0] + ".png"
+                got, why = _asset(p, dest, name)
+                g |= {"path": rel, "asset": prefix + got if got else None}
+                if why:
+                    g["reason"] = why
+        return {"route": "floats", "inventory": "latex", "source": str(st), **r}
+    return {"route": "floats-unavailable",
+            "reason": "no source.tex, no source.md, and no PDF"}
+
+
 def _norm_arxiv(v: str) -> str:
     return re.sub(r"^arxiv:|v\d+$", "", (v or "").strip().lower())
 
@@ -1420,6 +1489,9 @@ def main() -> int:
                     help="rename MODE.part.md to MODE.md and delete .MODE.parts")
     ap.add_argument("--limitations", metavar="WORKDIR",
                     help="author-stated limitation sentences in WORKDIR's source, verbatim")
+    ap.add_argument("--floats", metavar="WORKDIR",
+                    help="every figure and table in WORKDIR's source, with viewable "
+                         "figure images placed in assets/<slug>/")
     ap.add_argument("--list", nargs="?", const="", metavar="DIR",
                     help="list paper folders and the state of their lectures; "
                          "defaults to the configured library")
@@ -1446,6 +1518,9 @@ def main() -> int:
                          ensure_ascii=False, indent=2))
         return 0
 
+    if args.floats:
+        print(json.dumps(floats(Path(args.floats).expanduser()), ensure_ascii=False, indent=2))
+        return 0
     if args.limitations:
         print(json.dumps(limitations(Path(args.limitations).expanduser()),
                          ensure_ascii=False, indent=2))

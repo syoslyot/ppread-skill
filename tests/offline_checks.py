@@ -917,7 +917,41 @@ def check_floats_latex() -> None:
     assert fetch.latex_floats("\\renewcommand\\thetable{A\\arabic{table}}\n")["numbering"] == "custom"
 
 
+def check_floats_assets() -> None:
+    lib = Path(tempfile.mkdtemp()); w = lib / "my-paper"; (w / "src" / "figs").mkdir(parents=True)
+    (w / "src" / "figs" / "arch.pdf").write_bytes(b"%PDF")
+    (w / "src" / "a.png").write_bytes(b"\x89PNG")
+    (w / "source.tex").write_text(
+        "\\begin{figure}\\includegraphics{figs/arch}\\includegraphics{a.png}"
+        "\\includegraphics{gone}\\caption{X.}\\end{figure}\n", "utf-8")
+    ow, orun = fetch.shutil.which, fetch.subprocess.run
+    calls = []
+    def run(cmd, **k):
+        calls.append(cmd[0]); Path(cmd[-1] + ".png").write_bytes(b"\x89PNG")
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    fetch.shutil.which = lambda n: f"/usr/bin/{n}"; fetch.subprocess.run = run
+    try:
+        r = fetch.floats(w)
+        g = r["floats"][0]["graphics"]
+        assert r["route"] == "floats" and r["inventory"] == "latex"
+        assert [x["path"] for x in g] == ["figs/arch.pdf", "a.png", "gone"]
+        assert g[0]["asset"] == "assets/my-paper/figs-arch.png"
+        assert g[1]["asset"] == "assets/my-paper/a.png"
+        assert (lib / "assets" / "my-paper" / "a.png").read_bytes() == b"\x89PNG"
+        assert g[2]["asset"] is None and g[2]["reason"] == "not found in src/"
+        assert calls == ["pdftoppm"]
+        assert fetch.floats(w) == r and calls == ["pdftoppm"]   # up to date: no re-run
+        fetch.shutil.which = lambda n: None
+        (lib / "assets" / "my-paper" / "figs-arch.png").unlink()
+        g = fetch.floats(w)["floats"][0]["graphics"]
+        assert g[0]["asset"] is None and g[0]["reason"] == "pdftoppm not available"
+    finally:
+        fetch.shutil.which, fetch.subprocess.run = ow, orun
+    assert fetch.floats(Path(tempfile.mkdtemp()))["route"] == "floats-unavailable"
+
+
 CHECKS = [
+    check_floats_assets,
     check_floats_latex,
     check_assemble,
     check_limitations,
