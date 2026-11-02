@@ -1000,7 +1000,22 @@ def check_commented_input_not_expanded() -> None:
     assert "%\\input{cut}" in kept and "CUT" not in kept, kept
 
 
+def check_quiz_log_is_not_a_lecture() -> None:
+    d = Path(tempfile.mkdtemp()) / "paper-a"
+    write_doc(d / "broad.md", {**A, "mode": "broad"})
+    before = fetch.lecture_docs(d)
+    (d / "quiz.md").write_text(
+        "---\ntype: quiz\ngenerated: claude\ntitle: Paper B\n"
+        "arxiv: 2222.22222\nsessions: 1\nopen_points: 1\n---\n\n## 待加強\n", "utf-8")
+    assert fetch.folder_conflict(d, A_META, "paper-a") is None
+    assert fetch.library_row(d, "paper-a")["title"] == "Paper A"
+    assert fetch.lecture_docs(d) == before
+    rows = fetch.list_library(d.parent)["papers"]
+    assert [r["title"] for r in rows] == ["Paper A"], rows
+
+
 CHECKS = [
+    check_quiz_log_is_not_a_lecture,
     check_commented_input_not_expanded,
     check_floats_caption_scan,
     check_floats_assets,
